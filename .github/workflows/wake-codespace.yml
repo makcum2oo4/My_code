@@ -1,0 +1,34 @@
+name: Wake Codespace
+
+on:
+  schedule:
+    - cron: "18 23 * * *"
+  workflow_dispatch:
+    inputs:
+      codespace_name:
+        description: "Codespace name"
+        required: false
+        default: ""
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start Codespace
+        env:
+          CODESPACE_NAME: ${{ secrets.CODESPACE_NAME || inputs.codespace_name }}
+          CODESPACE_WAKE_TOKEN: ${{ secrets.CODESPACE_WAKE_TOKEN }}
+        run: |
+          if [ -z "$CODESPACE_NAME" ] || [ -z "$CODESPACE_WAKE_TOKEN" ]; then
+            echo "Missing CODESPACE_NAME or CODESPACE_WAKE_TOKEN"
+            exit 1
+          fi
+          curl -sS -X POST -H "Authorization: Bearer $CODESPACE_WAKE_TOKEN" \
+            "https://api.github.com/user/codespaces/$CODESPACE_NAME/start"
+      - name: Wait for boot
+        run: sleep 45
+      - name: Check availability
+        env:
+          CODESPACE_NAME: ${{ secrets.CODESPACE_NAME || inputs.codespace_name }}
+        run: |
+          curl -fsS "https://${CODESPACE_NAME}-4096.app.github.dev/__mobile/health" || true
