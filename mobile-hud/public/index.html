@@ -1,1 +1,29 @@
-<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Mobile HUD</title><link rel="stylesheet" href="/styles.css"></head><body><div id="app"><h1>Mobile HUD</h1><p>OpenCode proxy ready on :3000</p><button id="ping">Ping</button><pre id="out"></pre></div><script src="/app.js"></script></body></html>
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Mobile HUD</title><link rel="stylesheet" href="/styles.css"></head><body>
+<div id="app">
+<header id="hud">
+  <button class="chip" id="c4096">4096</button>
+  <button class="chip" id="c8080">8080</button>
+  <button class="chip" id="cmodel">Модель</button>
+  <button class="chip" id="ctok">Токены</button>
+  <button class="chip" id="cctx">Контекст</button>
+  <button class="chip" id="csrv">Сервер</button>
+  <button class="chip" id="cauto">Auto</button>
+  <button class="chip" id="cping">Ping</button>
+  <button class="chip" id="cwake">Wake</button>
+</header>
+<main id="feed"></main>
+<div id="queue"></div>
+<div id="inputbar">
+  <button id="plus">+</button>
+  <div id="chips">
+    <button class="mode" id="modebtn">Build</button>
+    <button class="mode" id="viewbtn">Чисто</button>
+    <button class="quick">продолжай</button>
+    <button class="quick">исправь ошибки</button>
+  </div>
+  <textarea id="inp" rows="1" placeholder="Сообщение..."></textarea>
+  <button id="send">Отправить</button>
+</div>
+<div id="sheet" class="hidden"><div id="sheetbg"></div><div id="sheetcontent"></div></div>
+</div>
+<script src="/app.js"></script></body></html>
