@@ -9,5 +9,5 @@
       "onAutoForward": "silent"
     }
   },
-  "postStartCommand": "bash /workspaces/My_code/.devcontainer/start-opencode.sh"
+  "postStartCommand": "nohup bash /workspaces/My_code/.devcontainer/start-opencode.sh >/tmp/oc-start.log 2>&1 &"
 }
