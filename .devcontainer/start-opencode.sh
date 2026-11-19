@@ -14,7 +14,7 @@ fi
 
 # Установить бинарник, если отсутствует (после пересборки контейнера).
 if ! command -v opencode >/dev/null 2>&1; then
-    curl -fsSL https://opencode.ai/install | bash -s -- --version 2.3.2
+    curl -fsSL https://opencode.ai/install | bash -s -- --version 1.19.6
     export PATH="$HOME/.opencode/bin:$PATH"
 fi
 
