@@ -6,7 +6,7 @@ exec 9>"$LOCK"
 flock -n 9 || exit 0
 
 if ! command -v opencode >/dev/null 2>&1; then
-    curl -fsSL https://opencode.ai/install | bash -s -- --version 1.19.6
+    curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.5
     export PATH="$HOME/.opencode/bin:$PATH"
 fi
 
@@ -52,10 +52,6 @@ PY
 if ! curl -sf http://127.0.0.1:4096/global/health >/dev/null 2>&1; then
     cd /workspaces/My_code
     setsid nohup env -u GITHUB_TOKEN -u GH_TOKEN OPENCODE_SERVER_PASSWORD="" opencode web --port 4096 --hostname 0.0.0.0 --print-logs --log-level WARN >/tmp/oc-web.log 2>&1 </dev/null &
-fi
-
-if [ -x /workspaces/My_code/mobile-hud/start.sh ]; then
-    setsid nohup bash /workspaces/My_code/mobile-hud/start.sh >/tmp/mobile-hud.log 2>&1 </dev/null &
 fi
 
 for i in $(seq 1 30); do
