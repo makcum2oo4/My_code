@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
+  "name": "My Code \u2014 OpenCode Custom",
+  "image": "mcr.microsoft.com/devcontainers/base:jammy",
+  "forwardPorts": [4096],
+  "portsAttributes": {
+    "4096": {
+      "label": "OpenCode",
+      "onAutoForward": "silent"
+    }
+  },
+  "postStartCommand": "bash /workspaces/My_code/.devcontainer/start-opencode.sh"
+}
