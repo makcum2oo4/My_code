@@ -2,12 +2,16 @@
   "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
   "name": "My Code \u2014 OpenCode Custom",
   "image": "mcr.microsoft.com/devcontainers/base:jammy",
-  "forwardPorts": [4096],
+  "forwardPorts": [4096, 3000],
   "portsAttributes": {
     "4096": {
       "label": "OpenCode",
       "onAutoForward": "silent"
+    },
+    "3000": {
+      "label": "Mobile HUD",
+      "onAutoForward": "notify"
     }
   },
-  "postStartCommand": "nohup bash /workspaces/My_code/.devcontainer/start-opencode.sh >/tmp/oc-start.log 2>&1 &"
+  "postStartCommand": "setsid nohup bash /workspaces/My_code/.devcontainer/start-opencode.sh >/tmp/oc-start.log 2>&1 </dev/null &"
 }
