@@ -28,3 +28,8 @@ else
   cat "$LOG_FILE"
   exit 1
 fi
+
+# Start Telegram bot
+setsid nohup node "$PROJECT_DIR/tg-bot.js" > /tmp/oc-tg.log 2>&1 &
+echo "Telegram bot started (PID: $!)"
+echo "Log: /tmp/oc-tg.log"
