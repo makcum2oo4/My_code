@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+const fallbackMod = require('/workspaces/My_code/oc-custom/fallback.js');
 
 const PORT = 3000;
 const UPSTREAM = '127.0.0.1:4096';
@@ -44,6 +45,16 @@ function proxyRequest(req, res) {
 
   if (targetPath === '/__custom/compact') {
     handleCompact(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/fallback/status') {
+    handleFallbackStatus(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/fallback/trigger') {
+    handleFallbackTrigger(req, res);
     return;
   }
 
@@ -474,6 +485,32 @@ function handleCompact(req, res) {
     res.writeHead(405);
     res.end();
   }
+}
+
+function handleFallbackStatus(req, res) {
+  const live = fallbackMod.getLiveProviders();
+  const response = {
+    autoFallback: true,
+    liveProviders: live.map(m => ({ ...m, cooldown: Math.max(0, m.cooldown) })),
+  };
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(response));
+}
+
+function handleFallbackTrigger(req, res) {
+  if (req.method !== 'POST') {
+    res.writeHead(405);
+    return res.end();
+  }
+
+  let body = '';
+  req.on('data', (chunk) => body += chunk);
+  req.on('end', () => {
+    try { data = JSON.parse(body); } catch { data = {}; }
+    const result = fallbackMod.applyFallback(data);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  });
 }
 
 const server = http.createServer((req, res) => {
