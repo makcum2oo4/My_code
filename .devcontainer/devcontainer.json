@@ -1,11 +1,18 @@
 {
   "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
-  "name": "My Code \u2014 OpenCode Custom",
+  "name": "My Code — OpenCode Custom",
   "image": "mcr.microsoft.com/devcontainers/base:jammy",
-  "forwardPorts": [4096],
+  "forwardPorts": [
+    4096,
+    3000
+  ],
   "portsAttributes": {
     "4096": {
       "label": "OpenCode",
+      "onAutoForward": "silent"
+    },
+    "3000": {
+      "label": "OpenCode Custom",
       "onAutoForward": "silent"
     }
   },

@@ -56,7 +56,12 @@ fi
 
 for i in $(seq 1 30); do
     if curl -sf http://127.0.0.1:4096/global/health >/dev/null 2>&1; then
-        exit 0
+        # start custom proxy on 3000
+if [ -x /workspaces/My_code/oc-custom/start.sh ]; then
+  bash /workspaces/My_code/oc-custom/start.sh >/tmp/oc-custom-start.log 2>&1 || true
+fi
+
+exit 0
     fi
     sleep 0.5
 done
