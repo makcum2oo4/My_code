@@ -1,351 +1,503 @@
 const http = require('http');
-const net = require('net');
 const fs = require('fs');
 const path = require('path');
-const system = require('./system');
-const fallback = require('./fallback');
+const os = require('os');
+const { execSync } = require('child_process');
 
-const HOST = '0.0.0.0';
 const PORT = 3000;
-const TARGET_HOST = '127.0.0.1';
-const TARGET_PORT = 4096;
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const CONFIG_PATH = path.join(__dirname, 'custom-config.json');
+const UPSTREAM = '127.0.0.1:4096';
+const PUBLIC_DIR = '/workspaces/My_code/oc-custom/public';
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
+function proxyRequest(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const targetPath = url.pathname;
 
-function sendJson(res, status, obj) {
-  const b = Buffer.from(JSON.stringify(obj));
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': b.length, 'Access-Control-Allow-Origin': '*' });
-  res.end(b);
-}
-
-function serveStatic(res, file) {
-  const full = path.join(PUBLIC_DIR, file);
-  try {
-    const data = fs.readFileSync(full);
-    const ext = path.extname(file).toLowerCase();
-    const ct = ext === '.css' ? 'text/css' : ext === '.js' ? 'application/javascript' : 'text/plain';
-    res.writeHead(200, { 'Content-Type': ct, 'Content-Length': data.length, 'Cache-Control': 'no-cache' });
-    res.end(data);
-  } catch (e) {
-    res.writeHead(404); res.end('not found');
-  }
-}
-
-async function handleCustom(req, res) {
-  const u = new URL(req.url, 'http://localhost');
-  const pathname = u.pathname;
-  const method = req.method.toUpperCase();
-
-  if (pathname === '/__custom/ping') {
-    let healthOk = false;
-    try {
-      const h = await new Promise((resolve) => {
-        const r = http.get('http://127.0.0.1:4096/global/health', { timeout: 3000 }, (resp) => {
-          let b = ''; resp.on('data', (c) => b += c); resp.on('end', () => resolve({ status: resp.statusCode, body: b }));
-        });
-        r.on('error', () => resolve({ status: 0, body: '' }));
-        r.on('timeout', () => { r.destroy(); resolve({ status: 0, body: '' }); });
-      });
-      healthOk = h.status === 200;
-    } catch (e) {}
-    return sendJson(res, 200, { ok: true, ts: Date.now(), upstream: healthOk });
-  }
-
-  if (pathname === '/__custom/config') {
-    if (method === 'GET') {
-      return sendJson(res, 200, fallback.loadConfig());
-    }
-    if (method === 'POST') {
-      const body = await readBody(req);
-      let patch = {};
-      try { patch = JSON.parse(body.toString('utf8') || '{}'); } catch (e) { patch = {}; }
-      // strip any keys
-      delete patch.keys; delete patch.auth; delete patch.key;
-      const cfg = fallback.saveConfig(patch);
-      return sendJson(res, 200, cfg);
-    }
-    return sendJson(res, 405, { error: 'method not allowed' });
-  }
-
-  if (pathname === '/__custom/preview') {
-    if (method === 'GET') {
-      const s = await system.previewStatus();
-      return sendJson(res, 200, s);
-    }
-    if (method === 'POST') {
-      const body = await readBody(req);
-      let data = {};
-      try { data = JSON.parse(body.toString('utf8') || '{}'); } catch (e) { data = {}; }
-      const action = (data.action || u.searchParams.get('action') || 'status').toLowerCase();
-      if (action === 'start') { const r = await system.previewStart(); return sendJson(res, 200, Object.assign({ log: system.tailLog(system.PREVIEW_LOG) }, r)); }
-      if (action === 'stop') { const r = await system.previewStop(); return sendJson(res, 200, r); }
-      if (action === 'restart') { const r = await system.previewRestart(); return sendJson(res, 200, r); }
-      const s = await system.previewStatus();
-      return sendJson(res, 200, s);
-    }
-    return sendJson(res, 405, { error: 'method not allowed' });
-  }
-
-  if (pathname === '/__custom/server4096') {
-    if (method === 'GET') {
-      const s = await system.status4096();
-      s.log = system.tailLog(system.SERVER_LOG);
-      return sendJson(res, 200, s);
-    }
-    if (method === 'POST') {
-      const body = await readBody(req);
-      let data = {};
-      try { data = JSON.parse(body.toString('utf8') || '{}'); } catch (e) { data = {}; }
-      const action = (data.action || u.searchParams.get('action') || 'status').toLowerCase();
-      if (action === 'restart') {
-        const r = await system.restart4096();
-        return sendJson(res, 200, r);
-      }
-      const s = await system.status4096();
-      s.log = system.tailLog(system.SERVER_LOG);
-      return sendJson(res, 200, s);
-    }
-    return sendJson(res, 405, { error: 'method not allowed' });
-  }
-
-  if (pathname === '/__custom/telemetry') {
-    return sendJson(res, 200, system.telemetry());
-  }
-
-  if (pathname === '/__custom/keys') {
-    if (method === 'GET') {
-      return sendJson(res, 200, system.getKeys());
-    }
-    if (method === 'POST') {
-      const body = await readBody(req);
-      let data = {};
-      try { data = JSON.parse(body.toString('utf8') || '{}'); } catch (e) { data = {}; }
-      const key = data.key || data.apiKey;
-      if (!key) return sendJson(res, 400, { error: 'key required' });
-      const provider = data.provider || system.detectProvider(key);
-      if (!provider) return sendJson(res, 400, { error: 'cannot detect provider' });
-      const info = system.setKey(provider, key);
-      let test = null;
-      if (data.test !== false) test = await system.pingProvider(provider, key);
-      return sendJson(res, 200, { ok: true, provider, keyMasked: info.keyMasked, test });
-    }
-    if (method === 'DELETE') {
-      const body = await readBody(req);
-      let data = {};
-      try { data = JSON.parse(body.toString('utf8') || '{}'); } catch (e) { data = {}; }
-      const provider = data.provider || u.searchParams.get('provider');
-      if (!provider) return sendJson(res, 400, { error: 'provider required' });
-      system.deleteKey(provider);
-      return sendJson(res, 200, { ok: true, provider });
-    }
-    return sendJson(res, 405, { error: 'method not allowed' });
-  }
-
-  if (pathname === '/__custom/compact') {
-    if (method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
-    const body = await readBody(req);
-    let data = {};
-    try { data = JSON.parse(body.toString('utf8') || '{}'); } catch (e) { data = {}; }
-    const sessionID = data.sessionID || u.searchParams.get('sessionID');
-    if (!sessionID) return sendJson(res, 400, { error: 'sessionID required' });
-    const directory = data.directory || u.searchParams.get('directory') || '/workspaces/My_code';
-    // get model from config or server
-    let providerID = data.providerID;
-    let modelID = data.modelID;
-    if (!providerID || !modelID) {
-      try {
-        const cfg = JSON.parse(await new Promise((resolve, reject) => {
-          const r = http.get('http://127.0.0.1:4096/config', { timeout: 3000 }, (resp) => { let b=''; resp.on('data',c=>b+=c); resp.on('end',()=>resolve(b)); });
-          r.on('error', reject);
-        }));
-        const m = (cfg.model || '').split('/');
-        if (m.length >= 2) { providerID = m[0]; modelID = m.slice(1).join('/'); }
-      } catch (e) {}
-    }
-    const result = await new Promise((resolve) => {
-      const q = '?directory=' + encodeURIComponent(directory);
-      const payload = JSON.stringify({ providerID, modelID, auto: false });
-      const r = http.request({ hostname: '127.0.0.1', port: 4096, path: '/session/' + encodeURIComponent(sessionID) + '/summarize' + q, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (resp) => {
-        let b = ''; resp.on('data', (c) => b += c); resp.on('end', () => resolve({ status: resp.statusCode, body: b }));
-      });
-      r.on('error', (e) => resolve({ status: 0, body: e.message }));
-      r.write(payload); r.end();
-    });
-    return sendJson(res, result.status || 200, { status: result.status, result: tryJson(result.body) });
-  }
-
-  // static custom assets
-  if (pathname === '/__custom/custom.css') return serveStatic(res, 'custom.css');
-  if (pathname === '/__custom/custom.js') return serveStatic(res, 'custom.js');
-
-  return sendJson(res, 404, { error: 'not found' });
-}
-
-function tryJson(s) { try { return JSON.parse(s); } catch (e) { return s; } }
-
-const isPromptPath = (p) => /\/session\/[^/]+\/(message|prompt_async)$/.test(p.split('?')[0]);
-
-function doProxy(req, res, bodyBuf, retryModel, attempt) {
-  attempt = attempt || 0;
-  const maxAttempts = 6;
-  const headers = Object.assign({}, req.headers);
-  delete headers.host;
-  delete headers['accept-encoding'];
-  headers.host = '127.0.0.1:4096';
-
-  let body = bodyBuf;
-  const prompt = isPromptPath(req.url);
-  if (retryModel && body && prompt) {
-    try {
-      const j = JSON.parse(body.toString('utf8'));
-      j.model = { providerID: retryModel.providerID, modelID: retryModel.modelID };
-      body = Buffer.from(JSON.stringify(j));
-      headers['content-length'] = String(body.length);
-    } catch (e) {}
-  }
-
-  // groq max_tokens note: cannot inject into schema; config only.
-
-  return new Promise((resolve, reject) => {
-    const preq = http.request({
-      hostname: TARGET_HOST, port: TARGET_PORT, path: req.url, method: req.method, headers
-    }, (pres) => {
-      const ct = (pres.headers['content-type'] || '').toLowerCase();
-      const status = pres.statusCode;
-
-      if (ct.includes('text/html')) {
-        const chunks = [];
-        pres.on('data', (c) => chunks.push(c));
-        pres.on('end', () => {
-          let html = Buffer.concat(chunks).toString('utf8');
-          const tag = '<link rel="stylesheet" href="/__custom/custom.css"><script src="/__custom/custom.js" defer></script>';
-          if (html.includes('</body>')) html = html.replace('</body>', tag + '</body>');
-          else html += tag;
-          const h = Object.assign({}, pres.headers);
-          delete h['content-length']; delete h['content-encoding']; delete h['transfer-encoding'];
-          res.writeHead(status, h);
-          res.end(html);
-          resolve();
-        });
-        return;
-      }
-
-      // For prompt endpoints, buffer full response to allow auto-fallback retry.
-      if (prompt) {
-        const chunks = [];
-        pres.on('data', (c) => chunks.push(c));
-        pres.on('end', async () => {
-          const respBuf = Buffer.concat(chunks);
-          const respText = respBuf.toString('utf8');
-          const cfg = fallback.loadConfig();
-          let reason = null;
-          if (status === 429) reason = 'HTTP 429';
-          if (!reason) reason = fallback.detectLimitError(respText);
-          const currentModel = (() => {
-            try { const j = JSON.parse((bodyBuf || Buffer.from('{}')).toString('utf8')); return j.model ? fallback.modelKey(j.model) : ''; } catch (e) { return ''; }
-          })();
-
-          if (cfg.autoFallback && reason && attempt < maxAttempts) {
-            fallback.setCooldown(currentModel, reason);
-            const next = fallback.getNextModel(currentModel);
-            if (next) {
-              // retry
-              try {
-                await doProxy(req, res, bodyBuf, next, attempt + 1);
-                resolve();
-                return;
-              } catch (e) {}
-            }
-          }
-
-          // send original
-          const h = Object.assign({}, pres.headers);
-          delete h['transfer-encoding'];
-          res.writeHead(status, h);
-          res.end(respBuf);
-          resolve();
-        });
-        return;
-      }
-
-      // stream other responses
-      const h = Object.assign({}, pres.headers);
-      delete h['transfer-encoding'];
-      res.writeHead(status, h);
-      pres.on('data', (c) => res.write(c));
-      pres.on('end', () => { res.end(); resolve(); });
-      pres.on('error', (e) => { try { res.end(); } catch (x) {} resolve(); });
-    });
-
-    preq.on('error', (e) => {
-      if (!res.headersSent) { res.writeHead(502, { 'Content-Type': 'text/plain' }); }
-      res.end('Bad gateway: ' + e.message);
-      reject(e);
-    });
-
-    if (body && body.length) preq.write(body);
-    preq.end();
-  });
-}
-
-const server = http.createServer(async (req, res) => {
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': '*', 'Access-Control-Allow-Headers': '*' });
-    return res.end();
-  }
-
-  const u = new URL(req.url, 'http://localhost');
-  if (u.pathname.startsWith('/__custom/')) {
-    // handle static assets under __custom already in handleCustom; but ensure
-    try { await handleCustom(req, res); } catch (e) { if (!res.headersSent) sendJson(res, 500, { error: e.message }); else res.end(); }
+  if (targetPath === '/__custom/ping') {
+    handlePing(req, res);
     return;
   }
 
-  // buffer request body
-  let body = Buffer.alloc(0);
-  try { body = await readBody(req); } catch (e) {}
-  try { await doProxy(req, res, body, null, 0); } catch (e) {
-    if (!res.headersSent) { res.writeHead(502, { 'Content-Type': 'text/plain' }); }
-    res.end('Bad gateway: ' + e.message);
+  if (targetPath === '/__custom/config') {
+    handleConfig(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/preview') {
+    handlePreview(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/server4096') {
+    handleServer4096(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/telemetry') {
+    handleTelemetry(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/keys') {
+    handleKeys(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/compact') {
+    handleCompact(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/custom.css') {
+    serveCustomCSS(req, res);
+    return;
+  }
+
+  if (targetPath === '/__custom/custom.js') {
+    serveCustomJS(req, res);
+    return;
+  }
+
+  if (targetPath.startsWith('/__custom/')) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+
+  forwardToUpstream(req, res);
+}
+
+function serveCustomCSS(req, res) {
+  const filePath = path.join(PUBLIC_DIR, 'custom.css');
+  if (fs.existsSync(filePath)) {
+    const content = fs.readFileSync(filePath, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'text/css' });
+    res.end(content);
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+}
+
+function serveCustomJS(req, res) {
+  const filePath = path.join(PUBLIC_DIR, 'custom.js');
+  if (fs.existsSync(filePath)) {
+    const content = fs.readFileSync(filePath, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'application/javascript' });
+    res.end(content);
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+}
+
+function injectHTML(html, cssPath, jsPath) {
+  const styleLink = `<link rel="stylesheet" href="${cssPath}">`;
+  const scriptTag = `<script src="${jsPath}" defer></script>`;
+
+  const bodyEnd = html.indexOf('</body>');
+  if (bodyEnd === -1) return html;
+
+  const before = html.slice(0, bodyEnd);
+  const after = html.slice(bodyEnd);
+
+  return before + styleLink + scriptTag + after;
+}
+
+function forwardToUpstream(req, res) {
+  const options = {
+    hostname: '127.0.0.1',
+    port: 4096,
+    path: req.url,
+    method: req.method,
+    headers: {
+      'Host': '127.0.0.1:4096',
+      'Accept': req.headers.accept || '',
+      'Accept-Language': req.headers['accept-language'] || '',
+      'Accept-Encoding': req.headers['accept-encoding'] || '',
+      'Content-Type': req.headers['content-type'] || '',
+      'Cookie': req.headers.cookie || '',
+      'Origin': 'http://127.0.0.1:3000',
+    },
+  };
+
+  const upstreamReq = http.request(options, (upstreamRes) => {
+    let data = '';
+    upstreamRes.on('data', (chunk) => data += chunk);
+    upstreamRes.on('end', () => {
+      const upstreamHeaders = {};
+      for (const [key, value] of Object.entries(upstreamRes.headers)) {
+        if (typeof value === 'string' && value.length > 0) {
+          upstreamHeaders[key] = value;
+        }
+      }
+
+      if (upstreamHeaders['content-encoding']) {
+        delete upstreamHeaders['content-encoding'];
+      }
+      if (upstreamHeaders['transfer-encoding']) {
+        delete upstreamHeaders['transfer-encoding'];
+      }
+
+      let contentType = upstreamHeaders['content-type'] || '';
+
+      if (upstreamRes.statusCode === 101) {
+        res.writeHead(101, upstreamHeaders);
+        upstreamRes.on('data', (chunk) => res.write(chunk));
+        upstreamRes.on('end', () => res.end());
+        return;
+      }
+
+      if (upstreamRes.statusCode === 429 || upstreamRes.statusCode === 403) {
+        res.writeHead(upstreamRes.statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Rate limited or access denied' }));
+        return;
+      }
+
+      if (contentType.includes('text/html') && upstreamRes.statusCode === 200) {
+        const html = injectHTML(data, '/__custom/custom.css', '/__custom/custom.js');
+        const rawHeaders = {};
+        for (const [k, v] of Object.entries(upstreamHeaders)) {
+          const kl = k.toLowerCase();
+          if (kl === 'content-length') continue;
+          if (kl === 'content-encoding') continue;
+          if (kl === 'transfer-encoding') continue;
+          if (typeof v === 'string') rawHeaders[k] = v;
+        }
+        res.writeHead(upstreamRes.statusCode, rawHeaders);
+        res.end(html);
+      } else {
+        const rawHeaders = {};
+        for (const [k, v] of Object.entries(upstreamHeaders)) {
+          if (typeof v === 'string') rawHeaders[k] = v;
+        }
+        res.writeHead(upstreamRes.statusCode, rawHeaders);
+        if (data) res.end(data);
+        else res.end();
+      }
+    });
+  });
+
+  upstreamReq.on('error', (e) => {
+    res.writeHead(502);
+    res.end(`Proxy error: ${e.message}`);
+  });
+
+  req.on('data', (chunk) => upstreamReq.write(chunk));
+  req.on('end', () => upstreamReq.end());
+}
+
+function handlePing(req, res) {
+  const ts = Date.now();
+  let globalHealth = { ok: true, ts: null };
+
+  try {
+    const healthResp = execSync('curl -sf http://127.0.0.1:4096/global/health 2>/dev/null', { encoding: 'utf8' }).trim();
+    globalHealth = JSON.parse(healthResp);
+  } catch {
+    globalHealth = { ok: false, ts };
+  }
+
+  const response = { ok: true, ts };
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(response));
+}
+
+function handleConfig(req, res) {
+  const configPath = '/workspaces/My_code/oc-custom/custom-config.json';
+  const gitignorePath = '/workspaces/My_code/oc-custom/.gitignore';
+
+  if (!fs.existsSync(gitignorePath)) {
+    fs.writeFileSync(gitignorePath, '__custom/custom-config.json\n');
+  }
+
+  if (req.method === 'GET') {
+    let data = {};
+    if (fs.existsSync(configPath)) {
+      try { data = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { data = {}; }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+  } else if (req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try { data = JSON.parse(body); } catch { data = {}; }
+      fs.writeFileSync(configPath, JSON.stringify(data, null, 2));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  } else {
+    res.writeHead(405);
+    res.end();
+  }
+}
+
+function handlePreview(req, res) {
+  const childPath = '/workspaces/My_code/oc-custom/preview-child.js';
+
+  if (!fs.existsSync(childPath)) {
+    fs.writeFileSync(childPath, '');
+  }
+
+  if (req.method === 'GET') {
+    try {
+      const result = execSync('lsof -ti:8080 2>/dev/null', { encoding: 'utf8' }).trim();
+      if (result) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'running', pid: result }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'stopped' }));
+      }
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'stopped' }));
+    }
+  } else if (req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try { data = JSON.parse(body); } catch { data = {}; }
+      if (data.action === 'start') {
+        execSync('setsid nohup node /workspaces/My_code/oc-custom/preview-server.js > /tmp/oc-preview.log 2>&1 </dev/null &', { stdio: 'ignore' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, action: 'started' }));
+      } else if (data.action === 'stop') {
+        try { execSync('kill $(lsof -ti:8080) 2>/dev/null', { encoding: 'utf8' }); } catch {}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, action: 'stopped' }));
+      } else if (data.action === 'restart') {
+        execSync('kill $(lsof -ti:8080) 2>/dev/null', { encoding: 'utf8' });
+        execSync('setsid nohup node /workspaces/My_code/oc-custom/preview-server.js > /tmp/oc-preview.log 2>&1 </dev/null &', { stdio: 'ignore' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, action: 'restarted' }));
+      } else {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Unknown action' }));
+      }
+    });
+  } else {
+    res.writeHead(405);
+    res.end();
+  }
+}
+
+function handleServer4096(req, res) {
+  const logPath = '/tmp/oc-web.log';
+
+  if (req.method === 'GET') {
+    let uptime = 'unknown';
+    let status = 'unknown';
+    let logLines = [];
+
+    try {
+      uptime = execSync('cat /proc/1/uptime 2>/dev/null | awk "{print int($1)}"', { encoding: 'utf8' }).trim();
+    } catch {}
+
+    try {
+      status = execSync('curl -sf http://127.0.0.1:4096/global/health 2>/dev/null', { encoding: 'utf8' }).trim();
+    } catch {}
+
+    try {
+      const logData = fs.readFileSync(logPath, 'utf8');
+      const lines = logData.split('\n').filter(l => l.trim()).slice(-50);
+      logLines = lines;
+    } catch {}
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ uptime, status, log: logLines }));
+  } else if (req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try { data = JSON.parse(body); } catch { data = {}; }
+      if (data.action === 'restart') {
+        try { execSync('pkill -f "opencode web" || true', { encoding: 'utf8' }); } catch {}
+        setTimeout(() => {
+          execSync('setsid nohup env -u GITHUB_TOKEN -u GH_TOKEN OPENCODE_SERVER_PASSWORD="" opencode web --port 4096 --hostname 0.0.0.0 --print-logs --log-level WARN >/tmp/oc-web.log 2>&1 </dev/null &', { stdio: 'ignore' });
+        }, 1000);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, action: 'restarted' }));
+      } else {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Unknown action' }));
+      }
+    });
+  } else {
+    res.writeHead(405);
+    res.end();
+  }
+}
+
+function handleTelemetry(req, res) {
+  const total = os.totalmem();
+  const free = os.freemem();
+  const cpuUsage = process.cpuUsage ? process.cpuUsage() : { user: 0, system: 0 };
+  const disk = execSync('df -k / 2>/dev/null | tail -1', { encoding: 'utf8' });
+  const diskParts = disk.split(/\s+/);
+  const diskTotal = parseInt(diskParts[1]) * 1024;
+  const diskFree = parseInt(diskParts[3]) * 1024;
+
+  const response = {
+    ram: {
+      total: total,
+      free,
+      used: total - free,
+      percent: Math.round((1 - free / total) * 100),
+    },
+    cpu: {
+      user: cpuUsage.user,
+      system: cpuUsage.system,
+    },
+    disk: {
+      total: diskTotal,
+      free: diskFree,
+      used: diskTotal - diskFree,
+      percent: Math.round((1 - diskFree / diskTotal) * 100),
+    },
+  };
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(response));
+}
+
+function handleKeys(req, res) {
+  const authPath = `${os.homedir()}/.local/share/opencode/auth.json`;
+  const configPath = `${os.homedir()}/.config/opencode/opencode.json`;
+
+  if (!fs.existsSync(`${os.homedir()}/.local/share/opencode`)) {
+    fs.mkdirSync(`${os.homedir()}/.local/share/opencode`, { recursive: true });
+  }
+
+  if (!fs.existsSync(authPath)) {
+    fs.writeFileSync(authPath, '{}');
+    fs.chmodSync(authPath, 0o600);
+  }
+
+  if (req.method === 'GET') {
+    let data = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+    const mask = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value === 'string' && value.length > 4) {
+        mask[key] = value.slice(0, 4) + '*****';
+      } else {
+        mask[key] = value;
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(mask));
+  } else if (req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try { data = JSON.parse(body); } catch { data = {}; }
+
+      let providerMap = { gsk_: 'groq', 'xai-': 'xai', 'sk-or-': 'openrouter', AIza: 'google' };
+      let resolvedProvider = 'openrouter';
+
+      for (const [prefix, provider] of Object.entries(providerMap)) {
+        for (const key of Object.keys(data)) {
+          if (key.startsWith(prefix)) {
+            resolvedProvider = provider;
+          }
+        }
+      }
+
+      data._provider = resolvedProvider;
+
+      try {
+        const testKey = Object.values(data).find(k => typeof k === 'string' && k.length > 10);
+        if (testKey) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, provider: resolvedProvider, key: testKey.slice(0, 4) + '*****' }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, provider: resolvedProvider }));
+        }
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, provider: resolvedProvider }));
+      }
+
+      let authData = { ...data };
+      delete authData._provider;
+      fs.writeFileSync(authPath, JSON.stringify(authData, null, 2));
+      fs.chmodSync(authPath, 0o600);
+
+      let cfgData = {};
+      if (fs.existsSync(configPath)) {
+        try { cfgData = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+      }
+      cfgData.disabled_providers = cfgData.disabled_providers || [];
+      if (!cfgData.disabled_providers.includes(resolvedProvider)) {
+        cfgData.disabled_providers.push(resolvedProvider);
+      }
+      fs.writeFileSync(configPath, JSON.stringify(cfgData, null, 2));
+    });
+  } else if (req.method === 'DELETE') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try { data = JSON.parse(body); } catch { data = {}; }
+      if (data.key) {
+        let authData = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+        delete authData[data.key];
+        fs.writeFileSync(authPath, JSON.stringify(authData, null, 2));
+        fs.chmodSync(authPath, 0o600);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  } else {
+    res.writeHead(405);
+    res.end();
+  }
+}
+
+function handleCompact(req, res) {
+  if (req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => body += chunk);
+    req.on('end', () => {
+      try { data = JSON.parse(body); } catch { data = {}; }
+      const reason = data.reason || 'manual';
+      try {
+        execSync(`nohup opencode compact --reason "${reason}" > /tmp/oc-compact.log 2>&1 &`, { encoding: 'utf8' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, reason }));
+      } catch (e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+  } else {
+    res.writeHead(405);
+    res.end();
+  }
+}
+
+const server = http.createServer((req, res) => {
+  proxyRequest(req, res);
+});
+
+server.on('upgrade', (req, res) => {
+  if (req.url === '/ws' || req.url === '/events') {
+    res.writeHead(101, {});
+    const ws = res.socket;
+    const net = require('net');
+    const client = new net.Socket();
+    client.connect(4096, '127.0.0.1', () => {
+      client.write(req.headers['sec-websocket-key'] || '');
+    });
+    client.on('data', (data) => ws.emit('data', data));
+    ws.on('data', (data) => client.write(data));
+    ws.on('close', () => client.destroy());
+  } else {
+    res.writeHead(404);
+    res.end();
   }
 });
 
-server.on('upgrade', (req, socket, head) => {
-  const headers = Object.assign({}, req.headers);
-  delete headers.host;
-  headers.host = '127.0.0.1:4096';
-  const preq = http.request({
-    hostname: TARGET_HOST, port: TARGET_PORT, path: req.url, method: req.method, headers
-  });
-  preq.on('upgrade', (pres, psocket, phead) => {
-    let raw = 'HTTP/1.1 101 ' + (pres.statusMessage || 'Switching Protocols') + '\r\n';
-    for (const [k, v] of Object.entries(pres.headers)) raw += k + ': ' + v + '\r\n';
-    raw += '\r\n';
-    socket.write(raw);
-    if (head && head.length) psocket.write(head);
-    if (phead && phead.length) socket.write(phead);
-    psocket.pipe(socket);
-    socket.pipe(psocket);
-    socket.on('error', () => { try { psocket.destroy(); } catch (e) {} });
-    psocket.on('error', () => { try { socket.destroy(); } catch (e) {} });
-  });
-  preq.on('error', () => { try { socket.destroy(); } catch (e) {} });
-  preq.end();
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Custom proxy running on 0.0.0.0:${PORT} → 127.0.0.1:4096`);
 });
-
-server.listen(PORT, HOST, () => {
-  console.log('oc-custom proxy listening on ' + HOST + ':' + PORT + ' -> ' + TARGET_HOST + ':' + TARGET_PORT);
-});
-
-process.on('SIGTERM', () => { server.close(); process.exit(0); });
-process.on('SIGINT', () => { server.close(); process.exit(0); });

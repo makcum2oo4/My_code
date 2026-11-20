@@ -1,11 +1,30 @@
 #!/usr/bin/env bash
-export PATH="$HOME/.bun/bin:$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+set -e
 
-if ss -ltn 2>/dev/null | grep -q ':3000 '; then
-  echo "port 3000 already in use"
-  exit 0
+PROJECT_DIR="/workspaces/My_code/oc-custom"
+LOG_FILE="/tmp/oc-custom.log"
+PROXY_SCRIPT="$PROJECT_DIR/proxy.js"
+
+if pkill -f "node.*proxy.js" 2>/dev/null; then
+  echo "Stopping existing proxy..."
+  sleep 1
 fi
 
-mkdir -p /workspaces/My_code/oc-custom/public
-setsid nohup node /workspaces/My_code/oc-custom/proxy.js >/tmp/oc-custom.log 2>&1 </dev/null &
-echo "started oc-custom on 0.0.0.0:3000"
+cd "$PROJECT_DIR"
+
+setsid nohup node "$PROXY_SCRIPT" > "$LOG_FILE" 2>&1 &
+
+PROCESS_ID=$!
+echo $PROCESS_ID > /tmp/oc-custom-pid
+echo "Started proxy on 0.0.0.0:3000 (PID: $PROCESS_ID)"
+echo "Log: $LOG_FILE"
+
+sleep 2
+
+if curl -sf http://127.0.0.1:3000/__custom/ping > /dev/null 2>&1; then
+  echo "Proxy is healthy"
+else
+  echo "Proxy health check FAILED"
+  cat "$LOG_FILE"
+  exit 1
+fi

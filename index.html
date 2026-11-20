@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#e7e3d9" />
+  <title>Lay’s Рифлёные — Чили и Лайм · 3D</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Lobster&family=Montserrat:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      --ink:#25261f;--muted:#6d6b5f;--green:#315f25;
+      --glass:rgba(250,248,241,.7);--line:rgba(255,255,255,.76);
+      --shadow:0 24px 70px rgba(45,42,33,.16);--safe:env(safe-area-inset-bottom,0px);
+    }
+    *{box-sizing:border-box}
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#e7e3d9;color:var(--ink);
+      font-family:"Montserrat",Arial,sans-serif;-webkit-font-smoothing:antialiased;overscroll-behavior:none}
+    body{background:radial-gradient(120% 90% at 50% 34%,#f5f2ea 0%,#e7e3d9 48%,#ccc6ba 100%)}
+    #scene{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;outline:none;cursor:grab}
+    #scene:active{cursor:grabbing}
+    .vignette{position:fixed;inset:0;pointer-events:none;z-index:2;
+      background:radial-gradient(115% 92% at 50% 44%,transparent 58%,rgba(61,56,43,.13) 100%),
+      linear-gradient(180deg,rgba(255,255,255,.13),transparent 18%,transparent 78%,rgba(55,51,41,.07))}
+    .hud{position:fixed;z-index:4;top:max(28px,env(safe-area-inset-top,0px) + 20px);left:clamp(20px,4vw,56px);
+      pointer-events:none;max-width:min(470px,58vw);animation:rise .9s cubic-bezier(.2,.75,.3,1) both}
+    .eyebrow{display:flex;align-items:center;gap:10px;margin-bottom:12px;color:var(--muted);
+      font-size:9.5px;font-weight:700;letter-spacing:.23em;text-transform:uppercase}
+    .eyebrow::before{content:"";width:30px;height:1px;background:var(--green);opacity:.56}
+    .hud h1{margin:0;font-size:clamp(23px,2.5vw,38px);font-weight:800;letter-spacing:-.045em;line-height:1.02}
+    .hud h1 em{font-style:normal;font-weight:700;color:var(--green)}
+    .hud p{margin:10px 0 0;font-size:10.5px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#767367}
+    .hud p span{display:inline-block;width:4px;height:4px;margin:0 9px 2px;border-radius:50%;background:#8d8a7c}
+    .edition{position:fixed;z-index:4;top:max(30px,env(safe-area-inset-top,0px) + 22px);right:clamp(20px,4vw,56px);
+      display:flex;align-items:center;gap:9px;padding:9px 13px;border:1px solid rgba(255,255,255,.62);border-radius:99px;
+      color:#626156;background:rgba(248,246,238,.42);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+      font-size:8.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;pointer-events:none;
+      animation:rise .9s .1s cubic-bezier(.2,.75,.3,1) both}
+    .edition i{width:6px;height:6px;border-radius:50%;background:#6f984e;box-shadow:0 0 0 3px rgba(111,152,78,.15)}
+    .controls-wrap{position:fixed;z-index:6;left:50%;bottom:calc(26px + var(--safe));transform:translateX(-50%);
+      display:flex;flex-direction:column;align-items:center;gap:12px;animation:riseDock .9s .18s cubic-bezier(.2,.75,.3,1) both}
+    .controls{display:flex;align-items:center;gap:4px;padding:6px;border:1px solid var(--line);border-radius:999px;
+      background:var(--glass);box-shadow:var(--shadow);backdrop-filter:blur(22px) saturate(1.25);
+      -webkit-backdrop-filter:blur(22px) saturate(1.25);white-space:nowrap}
+    .ctl{appearance:none;border:0;border-radius:99px;background:transparent;color:#34352d;
+      font:600 11px/1 "Montserrat",Arial,sans-serif;letter-spacing:.015em;height:43px;padding:0 16px;
+      display:inline-flex;align-items:center;justify-content:center;gap:9px;cursor:pointer;position:relative;
+      transition:background .25s,color .25s,transform .25s;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+    .ctl svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round;opacity:.8}
+    .ctl:hover{background:rgba(255,255,255,.74)}
+    .ctl:active{transform:scale(.97)}
+    .ctl:focus-visible{outline:2px solid rgba(49,95,37,.55);outline-offset:2px}
+    .ctl+.ctl::before{content:"";position:absolute;left:-2px;top:10px;bottom:10px;width:1px;background:rgba(46,47,40,.1)}
+    .switch-track{width:30px;height:17px;border-radius:99px;background:rgba(48,52,42,.16);position:relative;
+      transition:background .25s;flex:none}
+    .switch-track::after{content:"";position:absolute;width:13px;height:13px;border-radius:50%;top:2px;left:2px;
+      background:#fffdf7;box-shadow:0 1px 4px rgba(33,35,28,.25);transition:transform .28s cubic-bezier(.2,.8,.2,1)}
+    #toggle-auto[aria-pressed="true"] .switch-track{background:#4d7c38}
+    #toggle-auto[aria-pressed="true"] .switch-track::after{transform:translateX(13px)}
+    .hint{color:#777469;font-size:8.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;
+      text-shadow:0 1px 0 rgba(255,255,255,.35);transition:opacity .5s,transform .5s}
+    .hint.is-hidden{opacity:0;transform:translateY(4px)}
+    .loading{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:#e7e3d9;
+      transition:opacity .7s,visibility .7s}
+    .loading.is-done{opacity:0;visibility:hidden;pointer-events:none}
+    .loader-inner{text-align:center}
+    .loader-mark{font-family:"Lobster","Brush Script MT",Georgia,serif;font-size:55px;color:#315f25;
+      line-height:1;transform:rotate(-7deg)}
+    .loader-line{width:92px;height:1px;margin:25px auto 14px;background:rgba(49,95,37,.17);overflow:hidden;position:relative}
+    .loader-line::after{content:"";position:absolute;inset:0;background:#4e7d3b;transform-origin:left;
+      animation:loadLine 1.4s cubic-bezier(.4,0,.2,1) infinite}
+    .loader-caption{color:#69685e;font-size:8px;font-weight:700;letter-spacing:.22em;text-transform:uppercase}
+    .error-box{position:fixed;z-index:30;inset:0;display:none;place-items:center;padding:28px;background:#e7e3d9;
+      text-align:center;font-size:14px;line-height:1.6}
+    .error-box.is-visible{display:grid}
+    @keyframes loadLine{0%{transform:scaleX(0)}45%{transform:scaleX(.75)}100%{transform:scaleX(1);opacity:0}}
+    @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes riseDock{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+    @media (max-width:680px){
+      .hud{max-width:72vw;top:max(20px,env(safe-area-inset-top,0px) + 14px);left:20px}
+      .eyebrow{margin-bottom:8px;font-size:8px;letter-spacing:.2em}.eyebrow::before{width:20px}
+      .hud h1{font-size:clamp(20px,6vw,27px)}.hud p{margin-top:7px;font-size:8.5px;letter-spacing:.12em}
+      .edition{display:none}.controls-wrap{bottom:calc(17px + var(--safe));width:calc(100% - 24px);gap:9px}
+      .controls{max-width:100%;padding:5px}.ctl{height:42px;padding:0 13px;font-size:10.5px;gap:7px}
+      .hint{font-size:7.5px;letter-spacing:.1em}
+    }
+    @media (max-width:390px){.ctl{padding:0 10px;font-size:10px;gap:6px}.ctl svg{width:14px;height:14px}
+      .switch-track{width:27px}#toggle-auto[aria-pressed="true"] .switch-track::after{transform:translateX(10px)}
+      .hint{font-size:7px}}
+    @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="Интерактивная 3D-модель пачки чипсов Lay’s Рифлёные Чили и Лайм"></canvas>
+  <div class="vignette" aria-hidden="true"></div>
+  <header class="hud">
+    <div class="eyebrow">Packaging study · 001</div>
+    <h1>Lay’s <em>Рифлёные</em></h1>
+    <p>Чили и лайм <span></span> 105 г</p>
+  </header>
+  <div class="edition"><i></i> PBR · Procedural</div>
+  <div class="controls-wrap">
+    <div class="controls" role="toolbar" aria-label="Управление 3D-просмотром">
+      <button class="ctl" id="reset-view" type="button" aria-label="Сбросить ракурс камеры">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.2A8 8 0 1 1 4 14"/><path d="M4.2 4.4v4.8h4.8"/></svg>
+        Сбросить ракурс
+      </button>
+      <button class="ctl" id="toggle-auto" type="button" aria-pressed="false" aria-label="Переключить автоматическое вращение">
+        <span class="switch-track" aria-hidden="true"></span>
+        Авто-вращение
+      </button>
+    </div>
+    <div class="hint" id="hint">Перетащите · щипок для масштаба</div>
+  </div>
+  <div class="loading" id="loading" aria-live="polite">
+    <div class="loader-inner">
+      <div class="loader-mark">Lay’s</div>
+      <div class="loader-line"></div>
+      <div class="loader-caption">Собираем 3D-упаковку</div>
+    </div>
+  </div>
+  <div class="error-box" id="error-box">Не удалось запустить WebGL. Откройте страницу в современном браузере с поддержкой аппаратного ускорения.</div>
+  <noscript><div style="position:fixed;inset:0;z-index:40;display:grid;place-items:center;background:#e7e3d9;padding:30px;text-align:center;">Для просмотра 3D-модели включите JavaScript.</div></noscript>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
