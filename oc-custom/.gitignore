@@ -1,2 +1,4 @@
-__custom/custom-config.json
-tg-secret.json
+/.env
+/owner-chat.json
+/tg-bot.js.bak-*
+/preview-child.js

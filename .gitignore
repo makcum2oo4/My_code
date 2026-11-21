@@ -1,1 +1,8 @@
-oc-custom/custom-config.json
+.env
+oc-custom/tg-secret.json
+oc-custom/usage-stats.json
+oc-custom/boot.log
+oc-custom/owner-chat.json
+oc-custom/tg-bot.js.bak-*
+oc-custom/preview-child.js
+.oc-backup/
