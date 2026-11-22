@@ -16,6 +16,22 @@ const REFRESH_MS = 3 * 60 * 60 * 1000;
 const TTFT_MS = 25000;
 const MIDSTREAM_TIMEOUT_MS = 35000;
 const META_ROUTERS = ['openrouter/free'];
+const GITHUB_FREE_MODELS = [
+  { id: 'openai/gpt-4.1', name: 'GitHub: GPT-4.1', context_length: 1047576 },
+  { id: 'openai/gpt-4.1-mini', name: 'GitHub: GPT-4.1 Mini', context_length: 1047576 },
+  { id: 'openai/gpt-4o', name: 'GitHub: GPT-4o', context_length: 128000 },
+  { id: 'deepseek/DeepSeek-V3-0324', name: 'GitHub: DeepSeek V3 0324', context_length: 128000 },
+];
+const GEMINI_FREE_MODELS = [
+  { id: 'gemini-3-flash-preview', name: 'Gemini: 3 Flash Preview', context_length: 1048576 },
+  { id: 'gemini-3.1-flash-lite', name: 'Gemini: 3.1 Flash Lite', context_length: 1048576 },
+  { id: 'gemini-3.5-flash', name: 'Gemini: 3.5 Flash', context_length: 1048576 },
+];
+const GROQ_FREE_MODELS = [
+  { id: 'qwen/qwen3.8-27b', name: 'Groq: Qwen 3.8 27B', context_length: 131072 },
+  { id: 'openai/gpt-oss-20b', name: 'Groq: GPT-OSS 20B', context_length: 131072 },
+  { id: 'openai/gpt-oss-120b', name: 'Groq: GPT-OSS 120B', context_length: 131072 },
+];
 
 const UPSTREAMS = {
   openrouter: {
@@ -65,8 +81,67 @@ const UPSTREAMS = {
       _tools: true,
     }),
   },
+  github: {
+    id: 'github',
+    baseURL: 'https://models.github.ai/inference',
+    chatPath: '/chat/completions',
+    authHeader: () => {
+      const t = (process.env.MODELS_TOKEN_GITHUB || '').trim();
+      return t ? { authorization: 'Bearer ' + t } : {};
+    },
+    freeFilter: (m) => true,
+    normalize: (m) => ({
+      id: 'gh:' + m.id,
+      upstreamModelId: m.id,
+      upstream: 'github',
+      name: m.name || m.id,
+      context_length: m.context_length || 0,
+      created: m.created || 0,
+      supported_parameters: Array.isArray(m.supported_parameters) ? m.supported_parameters : ['tools'],
+      _tools: true,
+    }),
+  },
+  gemini: {
+    id: 'gemini',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    chatPath: '/chat/completions',
+    authHeader: () => {
+      const t = (process.env.GEMINI_API_KEY || '').trim();
+      return t ? { authorization: 'Bearer ' + t } : {};
+    },
+    freeFilter: (m) => true,
+    normalize: (m) => ({
+      id: 'gem:' + m.id,
+      upstreamModelId: m.id,
+      upstream: 'gemini',
+      name: m.name || m.id,
+      context_length: m.context_length || 0,
+      created: m.created || 0,
+      supported_parameters: Array.isArray(m.supported_parameters) ? m.supported_parameters : ['tools'],
+      _tools: true,
+    }),
+  },
+  groq: {
+    id: 'groq',
+    baseURL: 'https://api.groq.com/openai/v1',
+    chatPath: '/chat/completions',
+    authHeader: () => {
+      const t = (process.env.GROQ_API_KEY || '').trim();
+      return t ? { authorization: 'Bearer ' + t } : {};
+    },
+    freeFilter: (m) => true,
+    normalize: (m) => ({
+      id: 'groq:' + m.id,
+      upstreamModelId: m.id,
+      upstream: 'groq',
+      name: m.name || m.id,
+      context_length: m.context_length || 0,
+      created: m.created || 0,
+      supported_parameters: Array.isArray(m.supported_parameters) ? m.supported_parameters : ['tools'],
+      _tools: true,
+    }),
+  },
 };
-
 const COOLDOWN_STEPS = [2 * 60, 5 * 60, 15 * 60, 45 * 60];
 
 let apiKey = '';
@@ -249,6 +324,9 @@ function rankModels(list) {
   const banned = new Set(overrides.bannedModels);
   const filtered = (list || []).filter((m) => {
     if (!m || !m.id) return false;
+    if (String(m.id).startsWith('gh:') && !(process.env.MODELS_TOKEN_GITHUB || '').trim()) return false;
+    if (String(m.id).startsWith('gem:') && !(process.env.GEMINI_API_KEY || '').trim()) return false;
+    if (String(m.id).startsWith('groq:') && !(process.env.GROQ_API_KEY || '').trim()) return false;
     if (banned.has(m.id)) return false;
     const stripped = String(m.id).replace(/^(or|oc):/, '');
     if (META_ROUTERS.includes(stripped)) return false;
@@ -332,6 +410,48 @@ async function fetchFreeModels(force) {
       }
     } catch (e) { errLog('[router] opencode fetch failed:', e.message); }
 
+    if ((process.env.MODELS_TOKEN_GITHUB || '').trim()) {
+      for (const gm of GITHUB_FREE_MODELS) {
+        merged.push({
+          id: 'gh:' + gm.id,
+          upstreamModelId: gm.id,
+          upstream: 'github',
+          name: gm.name,
+          context_length: gm.context_length,
+          created: 0,
+          supported_parameters: ['tools'],
+          _tools: true,
+        });
+      }
+    }
+    if ((process.env.GEMINI_API_KEY || '').trim()) {
+      for (const gm of GEMINI_FREE_MODELS) {
+        merged.push({
+          id: 'gem:' + gm.id,
+          upstreamModelId: gm.id,
+          upstream: 'gemini',
+          name: gm.name,
+          context_length: gm.context_length,
+          created: 0,
+          supported_parameters: ['tools'],
+          _tools: true,
+        });
+      }
+    }
+    if ((process.env.GROQ_API_KEY || '').trim()) {
+      for (const gm of GROQ_FREE_MODELS) {
+        merged.push({
+          id: 'groq:' + gm.id,
+          upstreamModelId: gm.id,
+          upstream: 'groq',
+          name: gm.name,
+          context_length: gm.context_length,
+          created: 0,
+          supported_parameters: ['tools'],
+          _tools: true,
+        });
+      }
+    }
     for (const m of merged) m._normalized = true;
     cachedModels = merged;
     lastRefresh = Date.now();
@@ -339,10 +459,19 @@ async function fetchFreeModels(force) {
     log(`[router] refreshed models: ${merged.length} free+tools (openrouter+opencode)`);
   } catch (e) {
     errLog('[router] refresh failed:', e.message);
-    try {
-      const c = JSON.parse(fs.readFileSync(MODELS_CACHE, 'utf8'));
-      if (c && Array.isArray(c.data) && c.data.length && c.data[0]._normalized) { cachedModels = c.data; lastRefresh = c.ts || 0; }
-    } catch {}
+     try {
+       const c = JSON.parse(fs.readFileSync(MODELS_CACHE, 'utf8'));
+       if (c && Array.isArray(c.data) && c.data.length && c.data[0]._normalized) { cachedModels = c.data; lastRefresh = c.ts || 0; }
+     } catch {}
+     if (!(process.env.MODELS_TOKEN_GITHUB || '').trim()) {
+       cachedModels = (cachedModels || []).filter((m) => !String((m && m.id) || '').startsWith('gh:'));
+     }
+     if (!(process.env.GEMINI_API_KEY || '').trim()) {
+       cachedModels = (cachedModels || []).filter((m) => !String((m && m.id) || '').startsWith('gem:'));
+     }
+     if (!(process.env.GROQ_API_KEY || '').trim()) {
+       cachedModels = (cachedModels || []).filter((m) => !String((m && m.id) || '').startsWith('groq:'));
+     }
   } finally {
     refreshInProgress = false;
   }
@@ -354,6 +483,15 @@ try {
   const c = JSON.parse(fs.readFileSync(MODELS_CACHE, 'utf8'));
   if (c && Array.isArray(c.data) && c.data.length && c.data[0]._normalized) { cachedModels = c.data; lastRefresh = c.ts || 0; }
 } catch {}
+if (!(process.env.MODELS_TOKEN_GITHUB || '').trim()) {
+  cachedModels = (cachedModels || []).filter((m) => !String((m && m.id) || '').startsWith('gh:'));
+}
+if (!(process.env.GEMINI_API_KEY || '').trim()) {
+  cachedModels = (cachedModels || []).filter((m) => !String((m && m.id) || '').startsWith('gem:'));
+}
+if (!(process.env.GROQ_API_KEY || '').trim()) {
+  cachedModels = (cachedModels || []).filter((m) => !String((m && m.id) || '').startsWith('groq:'));
+}
 
 // ---------- context estimate ----------
 function estimateContext(body) {
@@ -434,6 +572,9 @@ function resolveUpstream(modelId) {
   if (m) return { upstream: m.upstream || 'openrouter', upstreamModelId: m.upstreamModelId || modelId };
   if (modelId.startsWith('or:')) return { upstream: 'openrouter', upstreamModelId: modelId.slice(3) };
   if (modelId.startsWith('oc:')) return { upstream: 'opencode', upstreamModelId: modelId.slice(3) };
+  if (modelId.startsWith('gh:')) return { upstream: 'github', upstreamModelId: modelId.slice(3) };
+  if (modelId.startsWith('gem:')) return { upstream: 'gemini', upstreamModelId: modelId.slice(4) };
+  if (modelId.startsWith('groq:')) return { upstream: 'groq', upstreamModelId: modelId.slice(5) };
   return { upstream: 'openrouter', upstreamModelId: modelId };
 }
 
