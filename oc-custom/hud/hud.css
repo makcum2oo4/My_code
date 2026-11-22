@@ -295,6 +295,19 @@ html, body {
   border-color: var(--oc-hud-accent);
 }
 
+.oc-hud-autopilot-task {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 6px;
+  color: #e5e7eb;
+  padding: 8px;
+  font-size: 13px;
+  resize: vertical;
+}
+
 .oc-hud-router {
   margin-top: 10px;
   padding: 8px;

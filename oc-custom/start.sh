@@ -25,6 +25,11 @@ if [ ! -f "$STOP_PROXY" ] && ! pgrep -f "oc-custom/proxy.js" > /dev/null; then
     setsid nohup node "$PROJECT_DIR/proxy.js" </dev/null >>"$LOG_FILE" 2>&1 9>&- &
 fi
 
+ORCH_LOG="/tmp/oc-orchestrator.log"
+if ! pgrep -f "oc-custom/orchestrator.js" > /dev/null; then
+    setsid nohup node "$PROJECT_DIR/orchestrator.js" </dev/null >>"$ORCH_LOG" 2>&1 9>&- &
+fi
+
 if ! pgrep -f "opencode web" > /dev/null; then
     setsid nohup env -u GITHUB_TOKEN -u GH_TOKEN OPENCODE_SERVER_PASSWORD="" opencode web --port 4096 --hostname 0.0.0.0 --print-logs --log-level WARN </dev/null >>/tmp/oc-web.log 2>&1 9>&- &
 fi
@@ -40,6 +45,9 @@ while true; do
         if ! pgrep -f "oc-custom/proxy.js" > /dev/null; then
             setsid nohup node /workspaces/My_code/oc-custom/proxy.js </dev/null >>/tmp/oc-custom.log 2>&1 9>&- &
         fi
+    fi
+    if ! pgrep -f "oc-custom/orchestrator.js" > /dev/null; then
+        setsid nohup node /workspaces/My_code/oc-custom/orchestrator.js </dev/null >>/tmp/oc-orchestrator.log 2>&1 9>&- &
     fi
     if ! pgrep -f "opencode web" > /dev/null; then
         setsid nohup env -u GITHUB_TOKEN -u GH_TOKEN OPENCODE_SERVER_PASSWORD="" opencode web --port 4096 --hostname 0.0.0.0 --print-logs --log-level WARN </dev/null >>/tmp/oc-web.log 2>&1 9>&- &

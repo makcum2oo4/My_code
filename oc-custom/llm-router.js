@@ -16,6 +16,34 @@ const REFRESH_MS = 3 * 60 * 60 * 1000;
 const TTFT_MS = 25000;
 const MIDSTREAM_TIMEOUT_MS = 35000;
 const META_ROUTERS = ['openrouter/free'];
+
+const ROLE_ALIASES = {
+  'auto-heavy': {
+    priority: [
+      'gh:openai/gpt-4.1',
+      'or:nvidia/nemotron-3-ultra-550b-a55b:free',
+      'gh:deepseek/DeepSeek-V3-0324',
+    ],
+    fallback: true,
+  },
+  'auto-coder': {
+    priority: [
+      'gh:openai/gpt-4.1-mini',
+      'oc:deepseek-v4.1-flash-free',
+      'gem:gemini-3.5-flash',
+      'groq:qwen/qwen3.8-27b',
+    ],
+    fallback: true,
+  },
+  'auto-fast': {
+    priority: [
+      'gem:gemini-3.1-flash-lite',
+      'groq:openai/gpt-oss-20b',
+      'oc:beam-free',
+    ],
+    fallback: true,
+  },
+};
 const GITHUB_FREE_MODELS = [
   { id: 'openai/gpt-4.1', name: 'GitHub: GPT-4.1', context_length: 1047576 },
   { id: 'openai/gpt-4.1-mini', name: 'GitHub: GPT-4.1 Mini', context_length: 1047576 },
@@ -232,9 +260,9 @@ function cooldownLeft(id) {
 function isInCooldown(id) {
   return cooldownLeft(id) > 0;
 }
-function setCooldown(id, sec, err) {
+function setCooldown(id, sec, err, stepOverride) {
   const cur = cooldowns.get(id) || { step: 0, fails: 0 };
-  const step = Math.min(cur.step + 1, COOLDOWN_STEPS.length - 1);
+  const step = (typeof stepOverride === 'number') ? stepOverride : Math.min(cur.step + 1, COOLDOWN_STEPS.length - 1);
   const dur = (typeof sec === 'number' && sec > 0) ? sec : COOLDOWN_STEPS[step];
   const until = Date.now() + dur * 1000;
   cooldowns.set(id, { until, step, fails: (cur.fails || 0) + 1, lastError: err ? String(err).slice(0, 300) : (cur.lastError || '') });
@@ -688,6 +716,11 @@ async function tryModel(modelId, body, isStream, res) {
             fail(`first-packet error: ${msg}`, retry, sec, (Number.isFinite(codeNum) ? codeNum : 200));
             return;
           }
+          // validate that response is a real chat completion (not a dead endpoint returning "OK")
+          if (!parsed || !Array.isArray(parsed.choices) || parsed.choices.length === 0) {
+            fail(`invalid response: ${raw.slice(0, 200)}`, true, null, 200);
+            return;
+          }
           // success: send
           if (!res.headersSent) {
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
@@ -946,6 +979,23 @@ const server = http.createServer(async (req, res) => {
   if (p === '/__router/status' && req.method === 'GET') {
     return sendJson(res, 200, buildStatus());
   }
+  if (p === '/pool-status' && req.method === 'GET') {
+    const list = rankedList();
+    const ready = list.filter((m) => m.status === 'ready' || m.status === 'pinned');
+    let nextAvailableAt = null;
+    for (const m of list) {
+      if (m.status === 'cooldown' && m.cooldownLeftSec > 0) {
+        const at = Date.now() + m.cooldownLeftSec * 1000;
+        if (nextAvailableAt === null || at < nextAvailableAt) nextAvailableAt = at;
+      }
+    }
+    return sendJson(res, 200, {
+      ts: Date.now(),
+      availableCount: ready.length,
+      totalCount: list.length,
+      nextAvailableAt,
+    });
+  }
   if (p === '/__router/reset' && req.method === 'POST') {
     for (const k of cooldowns.keys()) cooldowns.set(k, { until: 0, step: 0, fails: 0, lastError: '' });
     saveCooldowns();
@@ -1007,11 +1057,51 @@ const server = http.createServer(async (req, res) => {
       return true;
     });
 
+    // role aliases: if requested model is a role alias, use its priority list
+    let roleAlias = null;
+    const requestedModel = String(body.model || '').replace(/^[^/]+\//, '');
+    if (requestedModel && ROLE_ALIASES[requestedModel]) {
+      roleAlias = requestedModel;
+      const alias = ROLE_ALIASES[roleAlias];
+      const priorityCandidates = alias.priority.filter((id) => {
+        const m = ranked.find((x) => x.id === id);
+        if (!m) return false;
+        if (banned.has(id)) return false;
+        if (isInCooldown(id)) return false;
+        if ((m.context_length || 0) < est + 4096) return false;
+        return true;
+      });
+      // append remaining ranked models (excluding priority ones) as fallback
+      const restCandidates = ranked.map((m) => m.id).filter((id) => {
+        if (alias.priority.includes(id)) return false;
+        const m = ranked.find((x) => x.id === id);
+        if (!m) return false;
+        if (banned.has(id)) return false;
+        if (isInCooldown(id)) return false;
+        if ((m.context_length || 0) < est + 4096) return false;
+        return true;
+      });
+      candidates = priorityCandidates.concat(restCandidates);
+      if (alias.fallback && candidates.length === 0) {
+        // fall back to all non-banned ranked models ignoring cooldown
+        roleAlias = null;
+        candidates = ranked.map((m) => m.id).filter((id) => !banned.has(id));
+      }
+    }
+
     // meta routers as last resort
     const metaAvailable = META_ROUTERS.filter((id) => !banned.has(id) && !isInCooldown(id));
     // if no candidates, try meta routers (they are not in ranked list; check cooldown only)
     if (candidates.length === 0) {
       candidates = metaAvailable.slice();
+    }
+    // last resort: if still empty, try all non-banned ranked models ignoring cooldown
+    if (candidates.length === 0) {
+      candidates = ranked.map((m) => m.id).filter((id) => !banned.has(id));
+    }
+    // last resort: meta routers ignoring cooldown
+    if (candidates.length === 0) {
+      candidates = META_ROUTERS.filter((id) => !banned.has(id));
     }
 
     if (candidates.length === 0) {
@@ -1036,16 +1126,22 @@ const server = http.createServer(async (req, res) => {
         const reasonText = String(e.reason || 'error');
         const is429 = status === 429 || /^HTTP 429\b/.test(reasonText) || /free-usage-limit|rate limit exceeded/i.test(reasonText);
         let sec = (typeof e.retrySec === 'number' && e.retrySec > 0) ? e.retrySec : null;
-        if (!is429) {
-          if (typeof sec === 'number' && sec > 45 * 60) sec = 45 * 60;
-        }
         const cur = cooldowns.get(cand) || { step: 0, fails: 0 };
-        const nextStep = Math.min((cur.step || 0) + 1, COOLDOWN_STEPS.length - 1);
-        const dur = (typeof sec === 'number' && sec > 0) ? sec : COOLDOWN_STEPS[nextStep];
-        if (e.retry) {
+        let dur;
+        if (is429) {
+          // real rate limit: escalate per COOLDOWN_STEPS (cap 45 min) or use retry-after
+          if (typeof sec === 'number' && sec > 45 * 60) sec = 45 * 60;
+          const nextStep = Math.min((cur.step || 0) + 1, COOLDOWN_STEPS.length - 1);
+          dur = (typeof sec === 'number' && sec > 0) ? sec : COOLDOWN_STEPS[nextStep];
+        } else {
+          // ordinary errors (5xx, timeout, parse, invalid): short cooldown, no escalation
+          dur = 90;
+          sec = 90;
+        }
+        if (is429) {
           setCooldown(cand, sec, e.reason);
         } else {
-          setCooldown(cand, sec, e.reason);
+          setCooldown(cand, sec, e.reason, 0);
         }
         log(`[router] failover model=${cand} upstream=${upstream} status=${status === null ? '?' : status} error="${reasonText.slice(0, 120)}" cooldownSec=${dur}`);
         if (fromModel && fromModel !== cand) {}

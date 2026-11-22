@@ -594,6 +594,28 @@ async function fetchRouter(method, path, body) {
   });
 }
 
+async function fetchAutopilot(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const data = body === undefined || body === null ? null : Buffer.from(JSON.stringify(body));
+    const headers = { accept: 'application/json' };
+    if (data) { headers['content-type']='application/json'; headers['content-length']=data.length; }
+    const req = http.request({ hostname: '127.0.0.1', port: 4099, path, method, headers }, (res) => {
+      let raw='';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { raw += c; });
+      res.on('end', () => {
+        let parsed = raw;
+        try { parsed = raw ? JSON.parse(raw) : null; } catch {}
+        resolve({ status: res.statusCode, body: parsed, raw });
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => req.destroy(new Error('autopilot timeout')));
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
 async function buildStatus() {
   const health = { up: false, version: '', port: UPSTREAM_PORT };
   try {
@@ -1014,6 +1036,43 @@ async function handleCustom(req, res, url) {
       const r = await fetchRouter('POST', '/__router/ban', payload);
       return sendJson(res, r.status, r.body);
     } catch (e) { return sendJson(res, 502, { error: e.message }); }
+  }
+
+  // autopilot proxy
+  if (p === '/__custom/autopilot/status' && req.method === 'GET') {
+    try {
+      const r = await fetchAutopilot('GET', '/status');
+      return sendJson(res, r.status, r.body);
+    } catch (e) {
+      if (e.code === 'ECONNREFUSED') {
+        return sendJson(res, 503, { status: 'offline', error: 'Orchestrator not running' });
+      }
+      return sendJson(res, 502, { error: e.message });
+    }
+  }
+  if (p === '/__custom/autopilot/start' && req.method === 'POST') {
+    try {
+      let payload = {};
+      try { payload = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'invalid json' }); }
+      const r = await fetchAutopilot('POST', '/start', payload);
+      return sendJson(res, r.status, r.body);
+    } catch (e) {
+      if (e.code === 'ECONNREFUSED') {
+        return sendJson(res, 503, { status: 'offline', error: 'Orchestrator not running' });
+      }
+      return sendJson(res, 502, { error: e.message });
+    }
+  }
+  if (p === '/__custom/autopilot/stop' && req.method === 'POST') {
+    try {
+      const r = await fetchAutopilot('POST', '/stop');
+      return sendJson(res, r.status, r.body);
+    } catch (e) {
+      if (e.code === 'ECONNREFUSED') {
+        return sendJson(res, 503, { status: 'offline', error: 'Orchestrator not running' });
+      }
+      return sendJson(res, 502, { error: e.message });
+    }
   }
 
   if (p === '/__custom/action' && req.method === 'POST') {

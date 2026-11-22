@@ -5,7 +5,8 @@
   window.__ocHudLoaded = true;
 
   var POLL_MS = 5000;
-  var state = { status: null, router: null, drawerOpen: false, shutdownArmed: 0 };
+  var AUTOPOLL_MS = 4000;
+  var state = { status: null, router: null, drawerOpen: false, shutdownArmed: 0, autopilot: null, autopilotPolling: false };
   var els = {};
 
   function h(tag, attrs, children) {
@@ -94,6 +95,92 @@
       .catch(function (e) { toast(name + ': ' + e.message); });
   }
 
+  function autopilotApi(path, options) {
+    return api('/__custom/autopilot' + path, options);
+  }
+
+  function autopilotStart(task) {
+    return autopilotApi('/start', { method: 'POST', body: { task: task } })
+      .then(function (data) { toast('Автопилот запущен'); refreshAutopilot(); return data; })
+      .catch(function (e) { toast('Ошибка запуска: ' + e.message); });
+  }
+
+  function autopilotStop() {
+    return autopilotApi('/stop', { method: 'POST' })
+      .then(function (data) { toast('Автопилот остановлен'); refreshAutopilot(); return data; })
+      .catch(function (e) { toast('Ошибка остановки: ' + e.message); });
+  }
+
+  function refreshAutopilot() {
+    if (!state.drawerOpen) return Promise.resolve();
+    return autopilotApi('/status')
+      .then(function (data) {
+        state.autopilot = data;
+        renderAutopilot(data);
+      })
+      .catch(function (e) {
+        state.autopilot = { status: 'offline', error: e.message };
+        renderAutopilot(state.autopilot);
+      });
+  }
+
+  function renderAutopilot(data) {
+    if (!els.apStatus) return;
+    if (!data || data.status === 'offline') {
+      els.apStatus.textContent = 'Статус: offline';
+      setDot(els.apStatus, 'bad');
+      els.apTask.disabled = false;
+      els.apStartBtn.disabled = false;
+      els.apStopBtn.disabled = true;
+      while (els.apSteps.firstChild) els.apSteps.removeChild(els.apSteps.firstChild);
+      els.apSteps.appendChild(h('div', { class: 'oc-hud-empty', text: 'Оркестратор недоступен' }));
+      if (els.apError) { els.apError.textContent = ''; els.apError.style.display = 'none'; }
+      return;
+    }
+    var statusLabels = {
+      idle: 'idle',
+      planning: 'planning',
+      running: 'running',
+      paused_limits: 'paused (лимиты)',
+      failed: 'failed',
+      done: 'done'
+    };
+    var st = statusLabels[data.status] || data.status;
+    els.apStatus.textContent = 'Статус: ' + st;
+    var dotMap = { idle: 'ok', planning: 'warn', running: 'ok', paused_limits: 'warn', failed: 'bad', done: 'ok' };
+    setDot(els.apStatus, dotMap[data.status] || 'bad');
+
+    var canStart = data.status === 'idle' || data.status === 'done' || data.status === 'failed';
+    var canStop = data.status === 'planning' || data.status === 'running' || data.status === 'paused_limits';
+    els.apTask.disabled = !canStart;
+    els.apStartBtn.disabled = !canStart;
+    els.apStopBtn.disabled = !canStop;
+
+    while (els.apSteps.firstChild) els.apSteps.removeChild(els.apSteps.firstChild);
+    var steps = data.steps || [];
+    var current = data.currentStep || 0;
+    if (!steps.length) {
+      els.apSteps.appendChild(h('div', { class: 'oc-hud-empty', text: 'План не создан' }));
+    } else {
+      steps.forEach(function (step, i) {
+        var isCurrent = i === current && (data.status === 'running' || data.status === 'planning');
+        var stepStatus = i < current ? 'done' : (isCurrent ? 'current' : 'pending');
+        var row = h('div', { class: 'oc-hud-qitem' + (isCurrent ? ' oc-hud-current' : '') }, [
+          h('div', { class: 'oc-hud-qtext', text: (step.id || i+1) + '. ' + (step.title || '') + ' [' + (step.role || '') + ']' }),
+          h('div', { class: 'oc-hud-qmeta', text: stepStatus })
+        ]);
+        els.apSteps.appendChild(row);
+      });
+    }
+    if (data.lastError) {
+      els.apError.textContent = 'Ошибка: ' + data.lastError;
+      els.apError.style.display = 'block';
+    } else {
+      els.apError.textContent = '';
+      els.apError.style.display = 'none';
+    }
+  }
+
   function plaque(key, value, dotClass) {
     var val = h('span', { class: 'oc-hud-val', text: value });
     var children = [];
@@ -177,6 +264,29 @@
       }
     });
 
+    // autopilot block
+    els.apStatus = h('div', { class: 'oc-hud-autopilot-status', text: 'Статус: …' });
+    els.apTask = h('textarea', { class: 'oc-hud-autopilot-task', placeholder: 'Описание задачи для автопилота…', rows: 2 });
+    els.apStartBtn = h('button', { class: 'oc-hud-btn', type: 'button', text: 'Запустить' });
+    els.apStopBtn = h('button', { class: 'oc-hud-btn danger', type: 'button', text: 'Стоп' });
+    els.apStartBtn.addEventListener('click', function () {
+      var task = (els.apTask.value || '').trim();
+      if (!task) { toast('Введите задачу'); return; }
+      autopilotStart(task);
+    });
+    els.apStopBtn.addEventListener('click', function () { autopilotStop(); });
+    els.apSteps = h('div', { class: 'oc-hud-queue oc-hud-autopilot-steps' });
+    els.apError = h('div', { class: 'oc-hud-autopilot-error', style: 'display:none' });
+
+    els.autopilotBlock = h('div', { class: 'oc-hud-autopilot' }, [
+      h('div', { class: 'oc-hud-section-title', text: 'Автопилот' }),
+      els.apStatus,
+      h('div', { class: 'oc-hud-row' }, [els.apTask]),
+      h('div', { class: 'oc-hud-row' }, [els.apStartBtn, els.apStopBtn]),
+      els.apSteps,
+      els.apError
+    ]);
+
     // router block
     els.rStatus = h('div', { class: 'oc-hud-router-status', text: 'Роутер: …' });
     els.rList = h('div', { class: 'oc-hud-queue oc-hud-model-list' });
@@ -209,6 +319,7 @@
       h('div', { class: 'oc-hud-grid' }, [els.cCpu, els.cRam, els.cDisk, els.cUptime, els.cCs]),
       h('div', { class: 'oc-hud-row' }, [els.btnStart, els.btnRestart, els.btnStop, els.linkPreview]),
       h('div', { class: 'oc-hud-row' }, [els.btnOc, els.btnLimits, els.btnShutdown]),
+      els.autopilotBlock,
       els.routerBlock,
       els.qTitle,
       els.qList,
@@ -220,7 +331,16 @@
   function toggleDrawer() {
     state.drawerOpen = !state.drawerOpen;
     els.drawer.classList.toggle('open', state.drawerOpen);
-    if (state.drawerOpen) refresh();
+    if (state.drawerOpen) {
+      refresh();
+      refreshAutopilot();
+      if (!state.autopilotPolling) {
+        state.autopilotPolling = true;
+        setInterval(function () {
+          if (state.drawerOpen) refreshAutopilot();
+        }, AUTOPOLL_MS);
+      }
+    }
   }
 
   function setDot(node, cls) {

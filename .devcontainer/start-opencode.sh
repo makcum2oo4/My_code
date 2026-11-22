@@ -44,6 +44,31 @@ if os.path.exists(path):
         data = {}
 data.pop("enabled_providers", None)
 data["disabled_providers"] = ["github-copilot"]
+# Ensure autorouter provider with Auto Free and role aliases
+providers = data.get("provider", {})
+if "autorouter" not in providers:
+    providers["autorouter"] = {}
+autorouter = providers["autorouter"]
+autorouter["name"] = "Auto Router"
+autorouter["env"] = []
+autorouter["npm"] = "@ai-sdk/openai-compatible"
+autorouter["options"] = {"baseURL": "http://127.0.0.1:4098/v1"}
+models = autorouter.get("models", {})
+for mid, mcfg in [
+    ("auto-free", {"name": "Auto Free", "family": "auto-free", "tool_call": True, "reasoning": False, "temperature": True, "attachment": False, "limit": {"context": 200000, "output": 32000}}),
+    ("auto-heavy", {"name": "Auto Heavy", "family": "auto-heavy", "tool_call": True, "reasoning": True, "temperature": True, "attachment": False, "limit": {"context": 200000, "output": 32000}}),
+    ("auto-coder", {"name": "Auto Coder", "family": "auto-coder", "tool_call": True, "reasoning": True, "temperature": True, "attachment": False, "limit": {"context": 200000, "output": 32000}}),
+    ("auto-fast", {"name": "Auto Fast", "family": "auto-fast", "tool_call": True, "reasoning": False, "temperature": True, "attachment": False, "limit": {"context": 200000, "output": 32000}}),
+]:
+    if mid not in models:
+        models[mid] = mcfg
+autorouter["models"] = models
+whitelist = autorouter.get("whitelist", [])
+for mid in ["auto-free", "auto-heavy", "auto-coder", "auto-fast"]:
+    if mid not in whitelist:
+        whitelist.append(mid)
+autorouter["whitelist"] = whitelist
+data["provider"] = providers
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
