@@ -34,6 +34,82 @@ function writeJson(file, obj) {
   } catch (e) { errLog('writeJson failed:', e.message); }
 }
 
+const OUTPUT_DIR = '/tmp/autopilot-out';
+const TG_API = 'https://api.telegram.org';
+
+function prepareOutputDir() {
+  try { fs.mkdirSync(OUTPUT_DIR, { recursive: true }); } catch {}
+  try {
+    for (const f of fs.readdirSync(OUTPUT_DIR)) {
+      const full = path.join(OUTPUT_DIR, f);
+      try {
+        const st = fs.statSync(full);
+        if (st.isFile()) fs.unlinkSync(full);
+      } catch {}
+    }
+  } catch {}
+}
+
+function sendFileToTelegram(filePath) {
+  const token = (process.env.TG_BOT_TOKEN || '').trim();
+  const chatId = (process.env.TG_CHAT_ID || '').trim();
+  if (!token || !chatId) return Promise.resolve(false);
+  let stat;
+  try { stat = fs.statSync(filePath); } catch (e) { errLog('sendFile TG stat error:', e.message); return Promise.resolve(false); }
+  if (!stat.isFile()) return Promise.resolve(false);
+  const sizeMB = stat.size / (1024 * 1024);
+  if (stat.size > 49 * 1024 * 1024) {
+    const name = path.basename(filePath);
+    const text = `⚠️ Файл слишком большой для отправки (${sizeMB.toFixed(1)} МБ): ${name}`;
+    sendTg(text);
+    return Promise.resolve(false);
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  let method = 'sendDocument', field = 'document';
+  if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) { method = 'sendPhoto'; field = 'photo'; }
+  else if (['.mp4', '.mov', '.webm'].includes(ext)) { method = 'sendVideo'; field = 'video'; }
+  else if (['.mp3', '.wav', '.ogg'].includes(ext)) { method = 'sendAudio'; field = 'audio'; }
+  const name = path.basename(filePath);
+  const boundary = '----oc' + Date.now().toString(16) + Math.random().toString(16).slice(2);
+  const CRLF = '\r\n';
+  const head = Buffer.from(
+    `--${boundary}${CRLF}` +
+    `Content-Disposition: form-data; name="chat_id"${CRLF}${CRLF}${chatId}${CRLF}` +
+    `--${boundary}${CRLF}` +
+    `Content-Disposition: form-data; name="caption"${CRLF}${CRLF}${name}${CRLF}` +
+    `--${boundary}${CRLF}` +
+    `Content-Disposition: form-data; name="${field}"; filename="${name}"${CRLF}` +
+    `Content-Type: application/octet-stream${CRLF}${CRLF}`
+  );
+  const tail = Buffer.from(`${CRLF}--${boundary}--${CRLF}`);
+  const fileBuf = fs.readFileSync(filePath);
+  const body = Buffer.concat([head, fileBuf, tail]);
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/${method}`,
+      method: 'POST',
+      headers: {
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+        'content-length': body.length,
+      },
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { raw += c; });
+      res.on('end', () => {
+        let ok = false;
+        try { ok = JSON.parse(raw).ok === true; } catch {}
+        if (!ok) errLog('TG sendFile failed:', method, name, raw.slice(0, 300));
+        resolve(ok);
+      });
+    });
+    req.on('error', (e) => { errLog('TG sendFile error:', e.message); resolve(false); });
+    req.write(body);
+    req.end();
+  });
+}
+
 function getState() {
   return readJson(STATE_FILE) || { status: 'idle', steps: [], currentStep: 0, lastError: null, logs: [] };
 }
@@ -209,7 +285,7 @@ async function runPlanner(task, retry = false) {
 [
   { "id": 1, "title": "Краткое название", "prompt": "Полный промпт для исполнителя", "role": "auto-heavy|auto-coder|auto-fast", "verifyCmd": "опциональная shell-команда проверки" }
 ]
-Роли: auto-heavy — планирование/архитектура, auto-coder — код/инструменты, auto-fast — быстрые правки. verifyCmd — shell-команда для проверки результата шага (можно опустить).`;
+Роли: auto-heavy — планирование/архитектура, auto-coder — код/инструменты, auto-fast — быстрые правки. verifyCmd — shell-команда для проверки результата шага (можно опустить).\nЕсли задача предполагает создание итоговых файлов для пользователя (картинки, видео, аудио, документы, архивы), обязательно сохрани их в /tmp/autopilot-out/.`;
   const data = await callRouter('auto-heavy', [
     { role: 'system', content: sysPrompt },
     { role: 'user', content: task },
@@ -272,10 +348,11 @@ function extractFinalText(stdout) {
 function runOpencodeStep(model, prompt, attempt, prevError) {
   return new Promise((resolve) => {
     const args = ['run', '--model', model, '--format', 'json', '--auto'];
+    const promptRule = '\n\nПравило: если задача предполагает создание итоговых файлов для пользователя (картинки, видео, аудио, документы, архивы), обязательно сохрани их в /tmp/autopilot-out/.';
     if (attempt > 1 && prevError) {
-      args.push(`Попытка ${attempt}. Предыдущая ошибка: ${prevError}\n\nЗадача: ${prompt}`);
+      args.push(`Попытка ${attempt}. Предыдущая ошибка: ${prevError}\n\nЗадача: ${prompt}${promptRule}`);
     } else {
-      args.push(prompt);
+      args.push(prompt + promptRule);
     }
     const child = spawn('opencode', args, { cwd: '/workspaces/My_code', env: { ...process.env, OPENCODE_SERVER_PASSWORD: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
     currentProcess = child;
@@ -414,7 +491,16 @@ async function runOrchestrator() {
       }
     }
     setState({ status: 'done', currentStep: steps.length });
-    const _lr = (getState().lastResult || '').slice(0, 1500); sendTg('✅ Задача выполнена полностью.' + (_lr ? '\n\nРезультат:\n' + _lr : ''));
+    const _lr = (getState().lastResult || '').slice(0, 1500);
+    sendTg('✅ Задача выполнена полностью.' + (_lr ? '\n\nРезультат:\n' + _lr : ''));
+    // send output files to Telegram
+    try {
+      const outFiles = fs.readdirSync(OUTPUT_DIR).map((f) => path.join(OUTPUT_DIR, f)).filter((f) => { try { return fs.statSync(f).isFile(); } catch { return false; } });
+      for (const fp of outFiles) {
+        await sendFileToTelegram(fp);
+      }
+      for (const fp of outFiles) { try { fs.unlinkSync(fp); } catch {} }
+    } catch (e) { errLog('output files send error:', e.message); }
     return;
   }
 
@@ -447,6 +533,7 @@ const server = http.createServer(async (req, res) => {
         if (state.status === 'running' || state.status === 'planning') {
           return sendJson(res, 409, { error: 'already running' });
         }
+        prepareOutputDir();
         setState({ status: 'planning', task, steps: [], currentStep: 0, lastError: null, logs: [] });
         sendJson(res, 200, { ok: true });
 
@@ -477,7 +564,16 @@ const server = http.createServer(async (req, res) => {
           }
         }
         setState({ status: 'done', currentStep: steps.length });
-        const _lr = (getState().lastResult || '').slice(0, 1500); sendTg('✅ Задача выполнена полностью.' + (_lr ? '\n\nРезультат:\n' + _lr : ''));
+        const _lr = (getState().lastResult || '').slice(0, 1500);
+    sendTg('✅ Задача выполнена полностью.' + (_lr ? '\n\nРезультат:\n' + _lr : ''));
+    // send output files to Telegram
+    try {
+      const outFiles = fs.readdirSync(OUTPUT_DIR).map((f) => path.join(OUTPUT_DIR, f)).filter((f) => { try { return fs.statSync(f).isFile(); } catch { return false; } });
+      for (const fp of outFiles) {
+        await sendFileToTelegram(fp);
+      }
+      for (const fp of outFiles) { try { fs.unlinkSync(fp); } catch {} }
+    } catch (e) { errLog('output files send error:', e.message); }
       } catch (e) {
         if (e.message === 'PAUSED_LIMITS') return;
         errLog('start error:', e.stack);
