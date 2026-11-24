@@ -202,7 +202,7 @@ async function callRouter(model, messages, stream = false) {
     messages,
     stream,
     max_tokens: stream ? undefined : 8000,
-  });
+  }, 120000);
   if (res.status !== 200) throw new Error(`Router HTTP ${res.status}: ${JSON.stringify(res.data)}`);
   if (stream) throw new Error('stream not supported here');
   return res.data;
@@ -280,13 +280,13 @@ function extractJsonArray(text) {
   return null;
 }
 
-async function runPlanner(task, retry = false) {
+async function runPlanner(task, model = 'auto-heavy', retry = false) {
   const sysPrompt = `Ты — планировщик задач. Разбей задачу на чёткие шаги. Верни ТОЛЬКО JSON-массив:
 [
   { "id": 1, "title": "Краткое название", "prompt": "Полный промпт для исполнителя", "role": "auto-heavy|auto-coder|auto-fast", "verifyCmd": "опциональная shell-команда проверки" }
 ]
 Роли: auto-heavy — планирование/архитектура, auto-coder — код/инструменты, auto-fast — быстрые правки. verifyCmd — shell-команда для проверки результата шага (можно опустить).\nЕсли задача предполагает создание итоговых файлов для пользователя (картинки, видео, аудио, документы, архивы), обязательно сохрани их в /tmp/autopilot-out/.`;
-  const data = await callRouter('auto-heavy', [
+  const data = await callRouter(model, [
     { role: 'system', content: sysPrompt },
     { role: 'user', content: task },
   ], false);
@@ -298,7 +298,7 @@ async function runPlanner(task, retry = false) {
     if (!retry) {
       // one retry with stricter prompt
       const retryPrompt = sysPrompt + '\n\nВАЖНО: верни ТОЛЬКО валидный JSON-массив, без markdown и пояснений.';
-      const data2 = await callRouter('auto-heavy', [
+      const data2 = await callRouter(model, [
         { role: 'system', content: retryPrompt },
         { role: 'user', content: task },
       ], false);
@@ -541,11 +541,49 @@ const server = http.createServer(async (req, res) => {
         addLog({ level: 'info', msg: 'Planning started' });
         sendTg('🧠 Планировщик анализирует задачу...');
         let steps;
-        try {
-          steps = await runPlanner(task);
-        } catch (e) {
-          setState({ status: 'failed', lastError: e.message });
-          sendTg(`❌ Ошибка планировщика: ${e.message}`);
+        let lastPlanError = null;
+        // Cascade: auto-coder -> auto-fast -> native opencode/beam-free
+        for (const pm of ['auto-coder', 'auto-fast']) {
+          try {
+            steps = await runPlanner(task, pm);
+            lastPlanError = null;
+            break;
+          } catch (e) {
+            lastPlanError = e;
+            addLog({ level: 'warn', msg: 'Planner failed', model: pm, error: e.message });
+            sendTg(`⚠️ Планировщик (${pm}) не справился: ${e.message}`);
+          }
+        }
+        if (!steps) {
+          // Native fallback via opencode run
+          try {
+            addLog({ level: 'info', msg: 'Planner native fallback via opencode/beam-free' });
+            sendTg('🛟 Планировщик: пробую нативный opencode/beam-free');
+            const child = spawn('opencode', ['run', '--model', 'opencode/beam-free', '--format', 'json', '--auto', task + '\n\nВерни ТОЛЬКО валидный JSON-массив шагов.'], { cwd: '/workspaces/My_code', env: { ...process.env, OPENCODE_SERVER_PASSWORD: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+            let stdout = '', stderr = '';
+            await new Promise((resolve) => {
+              child.stdout.on('data', (d) => { stdout += d; });
+              child.stderr.on('data', (d) => { stderr += d; });
+              child.on('close', (code) => resolve(code));
+              setTimeout(() => { try { child.kill('SIGKILL'); } catch {} resolve(-1); }, 120000);
+            });
+            const text = extractFinalText(stdout) || stdout;
+            const parsed = extractJsonArray(text);
+            if (!parsed || parsed.length === 0) {
+              throw new Error('Native planner returned empty plan. stderr: ' + stderr.slice(0, 300));
+            }
+            steps = normalizeSteps(parsed);
+            lastPlanError = null;
+          } catch (e) {
+            lastPlanError = e;
+            addLog({ level: 'error', msg: 'Planner native fallback failed', error: e.message });
+          }
+        }
+        if (!steps) {
+          const msg = (lastPlanError && lastPlanError.message) ? lastPlanError.message : 'Planner failed';
+          const stage = (lastPlanError && lastPlanError.message && lastPlanError.message.includes('Native')) ? 'native fallback' : 'router';
+          setState({ status: 'failed', lastError: `Planner failed at ${stage}: ${msg}` });
+          sendTg(`❌ Ошибка планировщика (${stage}): ${msg}`);
           return;
         }
         setState({ status: 'running', steps, currentStep: 0 });

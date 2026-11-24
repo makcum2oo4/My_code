@@ -13,7 +13,8 @@ const MODELS_CACHE = '/tmp/oc-free-models.json';
 const OVERRIDES_PATH = '/tmp/oc-router-overrides.json';
 const COOLDOWN_STATE = '/tmp/oc-router-cooldowns.json';
 const REFRESH_MS = 3 * 60 * 60 * 1000;
-const TTFT_MS = 25000;
+const TTFT_MS = 20000;
+const NON_STREAM_TIMEOUT_MS = 25000;
 const MIDSTREAM_TIMEOUT_MS = 35000;
 const META_ROUTERS = ['openrouter/free'];
 
@@ -638,11 +639,14 @@ async function tryModel(modelId, body, isStream, res) {
     let lastChunkAt = Date.now();
     let midTimer = null;
     let ttftTimer = null;
+    let nonStreamTimer = null;
+    const controller = new AbortController();
     let upstreamReq = null;
     let upstreamRes = null;
 
     const cleanup = () => {
       if (ttftTimer) { clearTimeout(ttftTimer); ttftTimer = null; }
+      if (nonStreamTimer) { clearTimeout(nonStreamTimer); nonStreamTimer = null; }
       if (midTimer) { clearInterval(midTimer); midTimer = null; }
     };
 
@@ -669,6 +673,7 @@ async function tryModel(modelId, body, isStream, res) {
       path: urlObj.pathname + urlObj.search,
       method: 'POST',
       headers: { ...headers, 'content-length': data.length },
+      signal: controller.signal,
     }, (r) => {
       upstreamRes = r;
       const status = r.statusCode || 0;
@@ -864,11 +869,28 @@ async function tryModel(modelId, body, isStream, res) {
       });
     });
 
-    upstreamReq.on('error', (e) => fail('network error: ' + e.message, true, null));
+    upstreamReq.on('error', (e) => {
+      if (e && e.name === 'AbortError') { fail('timeout', true, null); return; }
+      fail('network error: ' + e.message, true, null);
+    });
     upstreamReq.setTimeout(0);
-    ttftTimer = setTimeout(() => {
-      if (!firstSent && !settled) fail('TTFT timeout', true, null);
-    }, TTFT_MS);
+    if (isStream) {
+      ttftTimer = setTimeout(() => {
+        if (!firstSent && !settled) {
+          try { controller.abort(); } catch {}
+          fail('TTFT timeout', true, null);
+          log(`[router] timeout model=${modelId} after ${TTFT_MS}ms (TTFB)`);
+        }
+      }, TTFT_MS);
+    } else {
+      nonStreamTimer = setTimeout(() => {
+        if (!settled) {
+          try { controller.abort(); } catch {}
+          fail('timeout', true, null);
+          log(`[router] timeout model=${modelId} after ${NON_STREAM_TIMEOUT_MS}ms (non-stream)`);
+        }
+      }, NON_STREAM_TIMEOUT_MS);
+    }
     upstreamReq.write(data);
     upstreamReq.end();
   });
