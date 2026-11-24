@@ -1075,6 +1075,30 @@ async function handleCustom(req, res, url) {
     }
   }
 
+  if (p === '/__custom/autopilot/upload' && req.method === 'POST') {
+    let payload = {};
+    try {
+      payload = JSON.parse(await readBody(req, 10 * 1024 * 1024 + 1024));
+    } catch (e) {
+      return sendJson(res, 400, { error: 'invalid json or too large' });
+    }
+    const filename = String(payload.filename || 'file');
+    const contentBase64 = String(payload.contentBase64 || '');
+    if (!contentBase64) return sendJson(res, 400, { error: 'contentBase64 required' });
+    // strip data:...;base64, prefix if present
+    const b64 = contentBase64.replace(/^data:[^;]*;base64,/, '');
+    let buf;
+    try { buf = Buffer.from(b64, 'base64'); } catch { return sendJson(res, 400, { error: 'bad base64' }); }
+    if (buf.length > 10 * 1024 * 1024) return sendJson(res, 413, { error: 'file too large (>10MB)' });
+    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '') || 'file';
+    const dir = '/tmp/autopilot-uploads';
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    const ts = Date.now();
+    const outPath = path.join(dir, `${ts}-${safeName}`);
+    try { fs.writeFileSync(outPath, buf); } catch (e) { return sendJson(res, 500, { error: e.message }); }
+    return sendJson(res, 200, { ok: true, path: outPath, name: safeName });
+  }
+
   if (p === '/__custom/action' && req.method === 'POST') {
     let payload = {};
     try { payload = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'invalid json' }); }

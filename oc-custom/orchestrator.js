@@ -249,6 +249,26 @@ function normalizeSteps(steps) {
   return steps;
 }
 
+function extractFinalText(stdout) {
+  const texts = [];
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      const o = JSON.parse(t);
+      if (o && o.type === 'text' && o.part && typeof o.part.text === 'string') {
+        texts.push(o.part.text);
+      } else if (o && typeof o.text === 'string' && o.type === 'text') {
+        texts.push(o.text);
+      }
+    } catch {}
+  }
+  if (texts.length > 0) return texts.join('\n').trim();
+  // fallback: last 2000 chars of cleaned stdout
+  const cleaned = String(stdout || '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+  return cleaned.slice(-2000);
+}
+
 function runOpencodeStep(model, prompt, attempt, prevError) {
   return new Promise((resolve) => {
     const args = ['run', '--model', model, '--format', 'json', '--auto'];
@@ -286,7 +306,7 @@ function runOpencodeStep(model, prompt, attempt, prevError) {
       if (stepTimeoutTimer) { clearTimeout(stepTimeoutTimer); stepTimeoutTimer = null; }
       currentProcess = null;
       const timedOut = code === null || code === undefined;
-      resolve({ code: code ?? -1, stdout, stderr, timedOut });
+      resolve({ code: code ?? -1, stdout, stderr, timedOut, finalText: extractFinalText(stdout) });
     });
   });
 }
@@ -323,6 +343,7 @@ async function executeStep(step, stepIndex) {
       addLog({ level: 'info', step: step.id, msg: 'router pool empty, trying native Beam Free' });
       sendTg(`🛟 Шаг ${step.id}: пул роутера пуст, пробую нативный Beam Free`);
       const fbResult = await runOpencodeStep('opencode/beam-free', step.prompt, 1, lastError);
+      if (fbResult.finalText) { setState({ lastResult: String(fbResult.finalText).slice(0, 4000) }); }
       const fbSuccess = fbResult.code === 0 && !fbResult.timedOut;
       if (fbSuccess) {
         if (step.verifyCmd) {
@@ -352,6 +373,7 @@ async function executeStep(step, stepIndex) {
     }
 
     const result = await runOpencodeStep(modelId, step.prompt, attempt, lastError);
+    if (result.finalText) { setState({ lastResult: String(result.finalText).slice(0, 4000) }); }
     const success = result.code === 0 && !result.timedOut;
 
     if (success && step.verifyCmd) {
@@ -392,7 +414,7 @@ async function runOrchestrator() {
       }
     }
     setState({ status: 'done', currentStep: steps.length });
-    sendTg('✅ Задача выполнена полностью.');
+    const _lr = (getState().lastResult || '').slice(0, 1500); sendTg('✅ Задача выполнена полностью.' + (_lr ? '\n\nРезультат:\n' + _lr : ''));
     return;
   }
 
@@ -455,7 +477,7 @@ const server = http.createServer(async (req, res) => {
           }
         }
         setState({ status: 'done', currentStep: steps.length });
-        sendTg('✅ Задача выполнена полностью.');
+        const _lr = (getState().lastResult || '').slice(0, 1500); sendTg('✅ Задача выполнена полностью.' + (_lr ? '\n\nРезультат:\n' + _lr : ''));
       } catch (e) {
         if (e.message === 'PAUSED_LIMITS') return;
         errLog('start error:', e.stack);

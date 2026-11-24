@@ -135,6 +135,9 @@
       while (els.apSteps.firstChild) els.apSteps.removeChild(els.apSteps.firstChild);
       els.apSteps.appendChild(h('div', { class: 'oc-hud-empty', text: 'Оркестратор недоступен' }));
       if (els.apError) { els.apError.textContent = ''; els.apError.style.display = 'none'; }
+      if (els.apResultLabel) els.apResultLabel.style.display = 'none';
+      if (els.apResult) { els.apResult.textContent = ''; els.apResult.style.display = 'none'; }
+      if (els.apCopyBtn) els.apCopyBtn.style.display = 'none';
       return;
     }
     var statusLabels = {
@@ -178,6 +181,16 @@
     } else {
       els.apError.textContent = '';
       els.apError.style.display = 'none';
+    }
+    var lr = (data && data.lastResult) ? String(data.lastResult) : '';
+    if (lr.trim()) {
+      if (els.apResultLabel) els.apResultLabel.style.display = '';
+      if (els.apResult) { els.apResult.textContent = lr; els.apResult.style.display = ''; }
+      if (els.apCopyBtn) els.apCopyBtn.style.display = '';
+    } else {
+      if (els.apResultLabel) els.apResultLabel.style.display = 'none';
+      if (els.apResult) { els.apResult.textContent = ''; els.apResult.style.display = 'none'; }
+      if (els.apCopyBtn) els.apCopyBtn.style.display = 'none';
     }
   }
 
@@ -269,22 +282,62 @@
     els.apTask = h('textarea', { class: 'oc-hud-autopilot-task', placeholder: 'Описание задачи для автопилота…', rows: 2 });
     els.apStartBtn = h('button', { class: 'oc-hud-btn', type: 'button', text: 'Запустить' });
     els.apStopBtn = h('button', { class: 'oc-hud-btn danger', type: 'button', text: 'Стоп' });
+    els.apFileBtn = h('button', { class: 'oc-hud-btn', type: 'button', text: '📎 Файл' });
+    els.apFileInput = h('input', { type: 'file', style: 'display:none' });
     els.apStartBtn.addEventListener('click', function () {
       var task = (els.apTask.value || '').trim();
       if (!task) { toast('Введите задачу'); return; }
       autopilotStart(task);
     });
     els.apStopBtn.addEventListener('click', function () { autopilotStop(); });
+    els.apFileBtn.addEventListener('click', function () { if (els.apFileInput) els.apFileInput.click(); });
+    els.apFileInput.addEventListener('change', function () {
+      var f = els.apFileInput.files && els.apFileInput.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var dataUrl = String(reader.result || '');
+        var b64 = dataUrl.indexOf(',') >= 0 ? dataUrl.split(',')[1] : dataUrl;
+        api('/__custom/autopilot/upload', { method: 'POST', body: { filename: f.name, contentBase64: b64 } })
+          .then(function (r) {
+            if (r && r.ok && r.path) {
+              var cur = els.apTask.value || '';
+              els.apTask.value = (cur ? cur + '\n' : '') + '[Прикреплённый файл: ' + r.path + ']';
+              toast('Файл загружен');
+            } else {
+              toast('Ошибка загрузки файла');
+            }
+          })
+          .catch(function () { toast('Ошибка загрузки файла'); });
+      };
+      reader.readAsDataURL(f);
+      els.apFileInput.value = '';
+    });
     els.apSteps = h('div', { class: 'oc-hud-queue oc-hud-autopilot-steps' });
     els.apError = h('div', { class: 'oc-hud-autopilot-error', style: 'display:none' });
+    els.apResultLabel = h('div', { class: 'oc-hud-section-title', text: 'Результат', style: 'display:none' });
+    els.apResult = h('div', { class: 'oc-hud-autopilot-result', style: 'display:none' });
+    els.apCopyBtn = h('button', { class: 'oc-hud-btn', type: 'button', text: 'Копировать', style: 'display:none' });
+    els.apCopyBtn.addEventListener('click', function () {
+      var t = els.apResult ? (els.apResult.textContent || '') : '';
+      if (!t) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(function () { toast('Скопировано'); }).catch(function () { toast('Не удалось скопировать'); });
+      } else {
+        try { var ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); toast('Скопировано'); } catch (e) { toast('Не удалось скопировать'); }
+      }
+    });
 
     els.autopilotBlock = h('div', { class: 'oc-hud-autopilot' }, [
       h('div', { class: 'oc-hud-section-title', text: 'Автопилот' }),
       els.apStatus,
       h('div', { class: 'oc-hud-row' }, [els.apTask]),
-      h('div', { class: 'oc-hud-row' }, [els.apStartBtn, els.apStopBtn]),
+      h('div', { class: 'oc-hud-row' }, [els.apStartBtn, els.apStopBtn, els.apFileBtn, els.apFileInput]),
       els.apSteps,
-      els.apError
+      els.apError,
+      els.apResultLabel,
+      els.apResult,
+      els.apCopyBtn
     ]);
 
     // router block
